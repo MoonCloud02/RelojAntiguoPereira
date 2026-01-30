@@ -12,10 +12,14 @@
  * - GND -> GND del DS3231
  * 
  * Instrucciones:
- * 1. Modifique la fecha y hora en la sección de configuración abajo
- * 2. Cargue este sketch al Arduino
- * 3. Abra el Monitor Serial (9600 baudios) para verificar
- * 4. Después de confirmar, cargue el sketch principal
+ * 1. Compile y cargue este sketch al Arduino
+ *    (Automáticamente usará la fecha/hora de tu PC)
+ * 2. Abra el Monitor Serial (9600 baudios) para verificar
+ * 3. Después de confirmar, cargue el sketch principal
+ * 
+ * NOTA: El RTC se configurará con la hora exacta del momento
+ *       en que se COMPILE el sketch (no cuando se cargue).
+ *       Si hay retraso, puede cargar el sketch nuevamente.
  * 
  * Autor: Miguel Angel Luna Garcia
  * Proyecto: Automatización Reloj Antiguo de Pereira
@@ -61,10 +65,14 @@ void setup() {
   // ========================================
   // CONFIGURAR FECHA Y HORA AQUÍ
   // ========================================
-  // Formato: año, mes, día, hora, minuto, segundo
-  // Ejemplo: 30 de enero de 2026 a las 10:30:00
   
-  DateTime newTime(2026, 1, 30, 10, 30, 0);
+  // OPCIÓN 1 (RECOMENDADA): Usar fecha y hora de compilación (automático) 
+  // Tomará la fecha y hora de tu PC al momento de compilar el sketch
+  DateTime newTime(F(__DATE__), F(__TIME__));
+  
+  // OPCIÓN 2 (MANUAL): Descomentar la línea siguiente para configurar manualmente
+  // Formato: año, mes, día, hora, minuto, segundo
+  // DateTime newTime(2026, 1, 30, 14, 30, 0);
   
   // ========================================
   
