@@ -114,51 +114,58 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 ### Sistema de Control
 
 #### Arduino UNO
-**Función:** Controlador principal de señales del motor
+**Función:** Controlador principal del sistema completo
 
 **Responsabilidades:**
 - Generación de señales PUL (pulsos) para control de pasos del motor
 - Control de dirección (DIR) del movimiento
 - Habilitación/deshabilitación (EN) del driver
-- Recepción de comandos desde ESP32 vía comunicación serial
+- Lectura continua del módulo RTC DS3231 para mantener la hora
+- Sincronización automática del reloj físico con la hora del RTC
 - Gestión de la lógica de movimiento del reloj
+- Detección y recuperación ante cortes de energía
 
 **Conexiones al Driver BH86:**
-- Pin digital → PUL+ (señal de pulsos)
+- Pin 8 → PUL+ (señal de pulsos)
 - GND → PUL-
-- Pin digital → DIR+ (dirección)
+- Pin 9 → DIR+ (dirección)
 - GND → DIR-
-- Pin digital → EN+ (habilitación)
+- Pin 10 → EN+ (habilitación)
 - GND → EN-
 
-**Comunicación Serial:**
-- TX (Pin 1) → RX del ESP32
-- RX (Pin 0) → TX del ESP32
-- GND común
+**Conexiones al RTC DS3231:**
+- SDA (A4) → SDA del DS3231
+- SCL (A5) → SCL del DS3231
+- 5V → VCC del DS3231
+- GND → GND del DS3231
 
-#### ESP32
-**Función:** Gestión de tiempo real (RTC) y recuperación ante cortes de energía
+#### Módulo RTC DS3231
+**Función:** Reloj de Tiempo Real de alta precisión
 
-**Responsabilidades:**
-- Mantener la hora actual utilizando el RTC interno
-- Guardar la hora en memoria no volátil (NVS - Non-Volatile Storage) periódicamente
-- Detectar cortes de energía mediante comparación de tiempo
-- Calcular el desfase temporal tras restauración de energía
-- Enviar comandos de ajuste al Arduino UNO para sincronizar el reloj físico
-- Proporcionar interfaz para ajuste manual de hora
+**Características:**
+- **Precisión:** ±2 ppm (±1 minuto por año)
+- **Interfaz:** I2C (dirección 0x68)
+- **Voltaje de operación:** 3.3V - 5V
+- **Batería de respaldo:** CR2032 (incluida)
+- **Autonomía de batería:** 5-8 años típico
+- **Compensación de temperatura:** Automática
+- **Rango de temperatura:** -40℃ a +85℃
+- **Memoria:** 32 bytes SRAM no volátil
 
-**Características del RTC ESP32:**
-- Reloj de tiempo real interno con bajo consumo
-- Memoria NVS persistente (flash interna)
-- Precisión: ±5 ppm (dependiendo del cristal)
-- Mantiene hora durante modo deep sleep (con batería de respaldo opcional)
+**Ventajas del DS3231:**
+- Mantiene la hora con precisión excepcional incluso sin energía externa
+- No requiere cristal externo (TCXO integrado)
+- Compensación automática de temperatura para máxima precisión
+- Batería de respaldo garantiza continuidad del tiempo durante cortes de energía
+- Interfaz I2C simple y confiable
 
-**Lógica de Recuperación:**
-1. Al arrancar, leer hora guardada en NVS y hora actual del RTC
-2. Calcular diferencia de tiempo durante el corte de energía
-3. Convertir diferencia de tiempo a pasos del motor necesarios
-4. Enviar comandos al Arduino para mover el reloj a la hora correcta
-5. Actualizar hora en NVS cada minuto
+**Lógica de Funcionamiento:**
+1. El Arduino lee la hora del DS3231 cada segundo vía I2C
+2. Compara la hora del RTC con la posición física del reloj
+3. Calcula los pasos necesarios para mantener sincronización
+4. Mueve el motor un paso por minuto para mantener el reloj actualizado
+5. En caso de corte de energía, el DS3231 mantiene la hora con su batería
+6. Al restaurarse la energía, el Arduino lee la hora correcta y sincroniza el reloj físico automáticamente
 
 ## 🔌 Esquema de Conexión
 
@@ -189,26 +196,18 @@ Vista desde el lado de montaje:
 ### Diagrama de Conexión del Sistema Completo
 
 ```
-Fuente 48V DC
-    │
-    ├─ V+ ──────────┐
-    └─ V- ──────────┼─────── GND común
-                    │
-              Driver BH86
-                    │
-    ┌───────────────┼───────────────┐
-    │               │               │
-Motor (A+,A-,B+,B-) │         Encoder (EA+,EA-,EB+,EB-)
-                    │
-              Señales Control
-                    │
-         ┌──────────┴──────────┐
-         │                     │
-    Arduino UNO           ESP32
-    (PUL,DIR,EN)      (RTC + NVS)
-         │                     │
-         └─────────┬───────────┘
-               Serial (TX/RX)
+Fuente 48V DC                  Arduino UNO (5V)
+    │                               │
+    ├─ V+ ──────────┐              │
+    └─ V- ──────────┼───────────── GND común
+                    │               │
+              Driver BH86           │
+                    │               │
+    ┌───────────────┼───────────────┼──────────┐
+    │               │               │          │
+Motor           Encoder         Control    RTC DS3231
+(A+,A-,B+,B-)   (EA+,EA-,       (PUL,DIR,  (SDA,SCL)
+                 EB+,EB-)        EN)       + Batería CR2032
 ```
 
 ### Conexiones Arduino UNO ↔ Driver BH86
@@ -257,31 +256,33 @@ Motor (A+,A-,B+,B-) │         Encoder (EA+,EA-,EB+,EB-)
 2. Conectar el encoder al puerto correspondiente del driver
 3. Conectar la fuente de alimentación 48V DC a V+ y V- del driver
 4. Conectar Arduino UNO al driver según tabla de conexiones (pines 8, 9, 10)
-5. Conectar ESP32 al Arduino mediante comunicación serial (TX/RX)
-6. Asegurar GND común entre todos los componentes
+5. Conectar módulo RTC DS3231 al Arduino mediante I2C (pines A4/SDA y A5/SCL)
+6. Instalar batería CR2032 en el módulo DS3231 (usualmente viene incluida)
+7. Asegurar GND común entre todos los componentes
 
 ### 3. Configuración del Driver
 1. Verificar los parámetros de corriente según las especificaciones del motor (6.4A)
 2. Configurar el modo de subdivisión de pasos si es necesario
 3. Ajustar los parámetros de lazo cerrado para optimizar la respuesta
 
-### 4. Programación de Microcontroladores
-1. **Arduino UNO:** Cargar el firmware [arduino_uno_control.ino](arduino_uno_control.ino)
-   - Configurar pines de salida para PUL, DIR, EN
-   - Inicializar comunicación serial a 9600 bps
-   - Implementar lógica de control de pasos
+### 4. Programación del Arduino
+1. **Instalar Librerías Necesarias:**
+   - RTClib by Adafruit (para el DS3231)
+   - Wire (incluida con Arduino IDE para comunicación I2C)
 
-2. **ESP32:** Cargar el firmware [esp32_rtc_sync.ino](esp32_rtc_sync.ino)
-   - Configurar RTC interno
-   - Inicializar NVS para almacenamiento persistente
-   - Establecer comunicación serial con Arduino
-   - Configurar rutina de sincronización post-corte
+2. **Cargar Firmware:** [arduino_uno_control.ino](arduino_uno_control.ino)
+   - Configurar pines de salida para PUL, DIR, EN
+   - Inicializar comunicación I2C con DS3231
+   - Implementar lógica de lectura continua del RTC
+   - Configurar sincronización automática del reloj físico
+   - Implementar detección de arranque inicial
 
 ### 5. Calibración Inicial
-1. Establecer posición inicial del reloj (12:00)
-2. Ajustar hora en ESP32
-3. Verificar movimiento correcto del motor en ambas direcciones
-4. Confirmar sincronización entre hora ESP32 y posición física del reloj
+1. Establecer la hora correcta en el DS3231 mediante el sketch de configuración
+2. Posicionar manualmente las manecillas del reloj a la hora actual
+3. Reiniciar el Arduino para iniciar la sincronización automática
+4. Verificar movimiento correcto del motor (debe avanzar un paso por minuto)
+5. Confirmar que la hora del DS3231 se mantiene tras desconectar alimentación externa
 
 ## ⚙️ Cálculos de Operación
 
@@ -356,17 +357,18 @@ Resolución angular = 360° / 80,000 = 0.0045° por paso
    - Mantener conexiones seriales alejadas de cables de potencia
 
 4. **Sistema de Control:**
-   - Realizar respaldo de la hora almacenada en ESP32 periódicamente
+   - Verificar que la batería CR2032 del DS3231 esté instalada correctamente
+   - Reemplazar la batería del DS3231 cada 5-8 años o cuando se detecte pérdida de hora
    - Verificar funcionamiento del RTC antes de puesta en marcha
-   - Probar la sincronización post-corte en ambiente controlado
-   - No manipular conexiones seriales con el sistema energizado
+   - Probar la sincronización tras desconexión en ambiente controlado
+   - No desconectar el DS3231 con el sistema en funcionamiento
 
 ## 📝 Documentación Técnica
 
 - [GearBox.pdf](GearBox.pdf) - Especificaciones de la caja reductora planetaria
 - [MotorDriver.pdf](MotorDriver.pdf) - Especificaciones del motor y driver
-- [arduino_uno_control.ino](arduino_uno_control.ino) - Firmware para Arduino UNO
-- [esp32_rtc_sync.ino](esp32_rtc_sync.ino) - Firmware para ESP32 con gestión RTC
+- [arduino_uno_control.ino](arduino_uno_control.ino) - Firmware completo para Arduino UNO con DS3231
+- [set_rtc_time.ino](set_rtc_time.ino) - Sketch para configurar la hora inicial del DS3231
 
 ## 🏛️ Contexto Histórico
 

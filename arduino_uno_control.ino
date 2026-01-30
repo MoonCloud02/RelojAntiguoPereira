@@ -1,21 +1,31 @@
 /*
- * Arduino UNO - Control de Motor Paso a Paso para Reloj de Torre
+ * Arduino UNO - Control de Motor Paso a Paso para Reloj de Torre con RTC DS3231
  * 
- * Este firmware controla el driver BH86 del motor paso a paso mediante
- * señales PUL (pulsos), DIR (dirección) y EN (habilitación).
- * Recibe comandos desde ESP32 vía comunicación serial.
+ * Este firmware controla el driver BH86 del motor paso a paso y gestiona
+ * la sincronización con el módulo RTC DS3231 de alta precisión.
  * 
  * Conexiones:
  * - Pin 8  -> PUL+ (Driver BH86)
  * - Pin 9  -> DIR+ (Driver BH86)
  * - Pin 10 -> EN+ (Driver BH86)
- * - Pin 0 (RX) -> TX del ESP32
- * - Pin 1 (TX) -> RX del ESP32
+ * - A4 (SDA) -> SDA del DS3231
+ * - A5 (SCL) -> SCL del DS3231
+ * - 5V -> VCC del DS3231
+ * - GND -> GND del DS3231
+ * 
+ * Características:
+ * - Sincronización automática con RTC DS3231
+ * - Detección de cortes de energía
+ * - Actualización automática cada minuto
+ * - Compensación de posición tras reinicio
  * 
  * Autor: Miguel Angel Luna Garcia
  * Proyecto: Automatización Reloj Antiguo de Pereira
  * Fecha: Enero 2026
  */
+
+#include <Wire.h>
+#include <RTClib.h>
 
 // Definición de pines
 #define PIN_PUL 8    // Señal de pulsos al driver
@@ -26,25 +36,25 @@
 #define STEPS_PER_REV 200           // Pasos por revolución del motor (1.8° por paso)
 #define MICROSTEPS 1                // Micropasos configurados en el driver
 #define GEAR_RATIO 20               // Relación de reducción de la caja reductora
-#define TOTAL_STEPS (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO)  // Pasos totales por revolución de salida
+#define TOTAL_STEPS (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO)  // 4000 pasos totales por revolución
 
 // Constantes del reloj
-#define STEPS_PER_HOUR (TOTAL_STEPS / 12)    // Pasos para una hora (reloj de 12 horas)
-#define STEPS_PER_MINUTE (STEPS_PER_HOUR / 60)  // Pasos por minuto
+#define STEPS_PER_HOUR (TOTAL_STEPS / 12)      // Pasos para una hora (333.33 pasos/hora)
+#define STEPS_PER_MINUTE (STEPS_PER_HOUR / 60) // Pasos por minuto (5.55 pasos/min)
 
 // Velocidad del motor
-#define PULSE_DELAY_US 1000         // Microsegundos entre pulsos (controla velocidad)
-#define MIN_PULSE_WIDTH_US 5        // Ancho mínimo del pulso (según driver)
+#define PULSE_DELAY_US 1000         // Microsegundos entre pulsos
+#define MIN_PULSE_WIDTH_US 5        // Ancho mínimo del pulso
 
 // Variables globales
+RTC_DS3231 rtc;                     // Objeto RTC
 long currentPosition = 0;           // Posición actual en pasos
-long targetPosition = 0;            // Posición objetivo
-bool isMoving = false;              // Estado de movimiento
-bool motorEnabled = false;          // Estado de habilitación del motor
+int lastMinute = -1;                // Último minuto procesado
+bool firstSync = true;              // Indica si es la primera sincronización
+bool motorEnabled = false;          // Estado del motor
 
-// Buffer para comandos seriales
-String inputString = "";
-bool stringComplete = false;
+// Variables para cálculo preciso de posición
+float accumulatedSteps = 0.0;       // Acumulador de pasos fraccionarios
 
 void setup() {
   // Configurar pines como salidas
@@ -59,168 +69,273 @@ void setup() {
   
   // Inicializar comunicación serial
   Serial.begin(9600);
+  Serial.println(F("Arduino UNO - Control Reloj de Torre con DS3231"));
   
-  // Reservar memoria para el buffer
-  inputString.reserve(50);
+  // Inicializar I2C y RTC
+  Wire.begin();
   
-  Serial.println("Arduino UNO - Control Reloj de Torre");
-  Serial.println("Sistema inicializado");
-  Serial.println("Esperando comandos...");
+  if (!rtc.begin()) {
+    Serial.println(F("ERROR: No se encontró el RTC DS3231"));
+    Serial.println(F("Verifique las conexiones I2C (SDA=A4, SCL=A5)"));
+    while (1) delay(1000);  // Detener ejecución
+  }
+  
+  Serial.println(F("RTC DS3231 detectado correctamente"));
+  
+  // Verificar si el RTC perdió energía
+  if (rtc.lostPower()) {
+    Serial.println(F("ADVERTENCIA: El RTC perdió energía"));
+    Serial.println(F("Configure la hora usando el sketch 'set_rtc_time.ino'"));
+  }
+  
+  // Mostrar hora actual del RTC
+  DateTime now = rtc.now();
+  printDateTime(now);
+  
+  // Leer temperatura del DS3231
+  float temp = rtc.getTemperature();
+  Serial.print(F("Temperatura: "));
+  Serial.print(temp);
+  Serial.println(F(" °C"));
+  
+  Serial.println(F("\nSistema inicializado"));
+  Serial.println(F("El reloj se sincronizará automáticamente cada minuto"));
+  Serial.println(F("\nComandos disponibles:"));
+  Serial.println(F("  SYNC       - Forzar sincronización inmediata"));
+  Serial.println(F("  STATUS     - Mostrar estado actual"));
+  Serial.println(F("  ENABLE     - Habilitar motor"));
+  Serial.println(F("  DISABLE    - Deshabilitar motor"));
+  Serial.println(F("  RESET      - Restablecer posición a 12:00"));
 }
 
 void loop() {
-  // Procesar comandos recibidos
-  if (stringComplete) {
-    processCommand(inputString);
-    inputString = "";
-    stringComplete = false;
-  }
+  // Leer hora actual del RTC
+  DateTime now = rtc.now();
   
-  // Ejecutar movimiento si está en curso
-  if (isMoving) {
-    moveOneStep();
-  }
-}
-
-/*
- * Evento de recepción serial
- */
-void serialEvent() {
-  while (Serial.available()) {
-    char inChar = (char)Serial.read();
-    if (inChar == '\n') {
-      stringComplete = true;
+  // Verificar si cambió el minuto
+  if (now.minute() != lastMinute) {
+    lastMinute = now.minute();
+    
+    if (firstSync) {
+      // Primera sincronización: mover a la hora actual
+      performFullSync(now);
+      firstSync = false;
     } else {
-      inputString += inChar;
+      // Sincronización normal: avanzar un minuto
+      moveOneMinute();
+    }
+    
+    // Mostrar información cada 5 minutos
+    if (lastMinute % 5 == 0) {
+      Serial.print(F("Hora RTC: "));
+      printTime(now);
+      Serial.print(F(" | Posición: "));
+      Serial.print(currentPosition);
+      Serial.print(F(" pasos | Temp: "));
+      Serial.print(rtc.getTemperature());
+      Serial.println(F(" °C"));
     }
   }
+  
+  // Procesar comandos desde Serial
+  if (Serial.available()) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+    processCommand(command, now);
+  }
+  
+  delay(500);  // Verificar cada medio segundo
 }
 
 /*
- * Procesar comandos recibidos por serial
- * Formato de comandos:
- * - MOVE:<pasos>     -> Mover X pasos (positivo = adelante, negativo = atrás)
- * - SYNC:<hh:mm>     -> Sincronizar a hora específica
- * - STOP             -> Detener movimiento
- * - STATUS?          -> Solicitar estado
- * - ENABLE           -> Habilitar motor
- * - DISABLE          -> Deshabilitar motor
+ * Realizar sincronización completa del reloj
  */
-void processCommand(String command) {
-  command.trim();
-  
-  if (command.startsWith("MOVE:")) {
-    // Extraer número de pasos
-    long steps = command.substring(5).toInt();
-    moveToRelativePosition(steps);
-    
-  } else if (command.startsWith("SYNC:")) {
-    // Sincronizar a hora específica (formato hh:mm)
-    String timeStr = command.substring(5);
-    syncToTime(timeStr);
-    
-  } else if (command == "STOP") {
-    stopMovement();
-    Serial.println("OK:STOPPED");
-    
-  } else if (command == "STATUS?") {
-    sendStatus();
-    
-  } else if (command == "ENABLE") {
-    enableMotor(true);
-    Serial.println("OK:ENABLED");
-    
-  } else if (command == "DISABLE") {
-    enableMotor(false);
-    Serial.println("OK:DISABLED");
-    
-  } else {
-    Serial.print("ERROR:UNKNOWN_COMMAND:");
-    Serial.println(command);
-  }
-}
-
-/*
- * Mover a posición relativa
- */
-void moveToRelativePosition(long steps) {
-  targetPosition = currentPosition + steps;
-  isMoving = true;
-  enableMotor(true);
-  
-  Serial.print("OK:MOVING:");
-  Serial.println(steps);
-}
-
-/*
- * Sincronizar a hora específica
- * Formato: "hh:mm"
- */
-void syncToTime(String timeStr) {
-  int colonIndex = timeStr.indexOf(':');
-  if (colonIndex == -1) {
-    Serial.println("ERROR:INVALID_TIME_FORMAT");
-    return;
-  }
-  
-  int hours = timeStr.substring(0, colonIndex).toInt();
-  int minutes = timeStr.substring(colonIndex + 1).toInt();
-  
-  // Validar hora
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-    Serial.println("ERROR:INVALID_TIME_VALUES");
-    return;
-  }
-  
-  // Convertir a formato 12 horas
-  if (hours > 12) {
-    hours -= 12;
-  } else if (hours == 0) {
-    hours = 12;
-  }
+void performFullSync(DateTime now) {
+  Serial.println(F("\n=== SINCRONIZACIÓN COMPLETA ==="));
+  Serial.print(F("Sincronizando a: "));
+  printTime(now);
+  Serial.println();
   
   // Calcular posición objetivo
-  long targetSteps = (hours * STEPS_PER_HOUR) + (minutes * STEPS_PER_MINUTE);
+  int hours12 = now.hour() % 12;  // Convertir a formato 12 horas
+  if (hours12 == 0) hours12 = 12;
   
-  // Calcular diferencia (siempre mover hacia adelante, camino más corto)
-  long diff = targetSteps - (currentPosition % TOTAL_STEPS);
+  long targetSteps = calculateStepsForTime(hours12, now.minute());
   
-  // Ajustar para tomar el camino más corto
+  Serial.print(F("Posición actual: "));
+  Serial.print(currentPosition);
+  Serial.print(F(" pasos | Objetivo: "));
+  Serial.print(targetSteps);
+  Serial.println(F(" pasos"));
+  
+  // Calcular diferencia (camino más corto)
+  long diff = targetSteps - currentPosition;
+  
+  // Ajustar para tomar el camino más corto en el reloj de 12 horas
   if (diff > TOTAL_STEPS / 2) {
     diff -= TOTAL_STEPS;
   } else if (diff < -TOTAL_STEPS / 2) {
     diff += TOTAL_STEPS;
   }
   
-  moveToRelativePosition(diff);
+  Serial.print(F("Moviendo "));
+  Serial.print(abs(diff));
+  Serial.print(F(" pasos "));
+  Serial.println(diff > 0 ? F("hacia adelante") : F("hacia atrás"));
   
-  Serial.print("OK:SYNC:");
-  Serial.print(hours);
-  Serial.print(":");
-  Serial.println(minutes);
+  // Realizar movimiento
+  moveSteps(diff);
+  
+  Serial.println(F("Sincronización completa finalizada\n"));
 }
 
 /*
- * Detener movimiento inmediatamente
+ * Mover el reloj un minuto
  */
-void stopMovement() {
-  isMoving = false;
-  targetPosition = currentPosition;
+void moveOneMinute() {
+  // Acumular pasos fraccionarios para mayor precisión
+  accumulatedSteps += STEPS_PER_MINUTE;
+  
+  // Extraer parte entera
+  int stepsToMove = (int)accumulatedSteps;
+  accumulatedSteps -= stepsToMove;
+  
+  if (stepsToMove > 0) {
+    moveSteps(stepsToMove);
+  }
+}
+
+/*
+ * Mover el motor N pasos
+ * steps puede ser positivo (adelante) o negativo (atrás)
+ */
+void moveSteps(long steps) {
+  if (steps == 0) return;
+  
+  // Determinar dirección
+  bool forward = (steps > 0);
+  digitalWrite(PIN_DIR, forward ? HIGH : LOW);
+  
+  // Habilitar motor
+  enableMotor(true);
+  
+  // Realizar pasos
+  long absSteps = abs(steps);
+  for (long i = 0; i < absSteps; i++) {
+    // Generar pulso
+    digitalWrite(PIN_PUL, HIGH);
+    delayMicroseconds(MIN_PULSE_WIDTH_US);
+    digitalWrite(PIN_PUL, LOW);
+    delayMicroseconds(PULSE_DELAY_US);
+    
+    // Actualizar posición
+    if (forward) {
+      currentPosition++;
+    } else {
+      currentPosition--;
+    }
+    
+    // Mantener posición dentro del rango 0 - TOTAL_STEPS
+    if (currentPosition >= TOTAL_STEPS) {
+      currentPosition -= TOTAL_STEPS;
+    } else if (currentPosition < 0) {
+      currentPosition += TOTAL_STEPS;
+    }
+    
+    // Pequeña pausa cada 100 pasos para no saturar
+    if (i % 100 == 0 && i > 0) {
+      delay(10);
+    }
+  }
+  
+  // Deshabilitar motor tras movimiento
+  delay(100);
   enableMotor(false);
 }
 
 /*
- * Enviar estado actual
+ * Calcular pasos necesarios para una hora específica
  */
-void sendStatus() {
-  if (isMoving) {
-    Serial.print("MOVING:");
+long calculateStepsForTime(int hours, int minutes) {
+  // Asegurar que hours está en formato 12 horas
+  if (hours > 12) hours = hours % 12;
+  if (hours == 0) hours = 12;
+  
+  long totalMinutes = (hours - 12) * 60 + minutes;  // Minutos desde las 12:00
+  if (totalMinutes < 0) totalMinutes += 12 * 60;
+  
+  float steps = totalMinutes * STEPS_PER_MINUTE;
+  return (long)steps;
+}
+
+/*
+ * Procesar comandos desde Serial
+ */
+void processCommand(String command, DateTime now) {
+  command.toUpperCase();
+  
+  if (command == "SYNC") {
+    Serial.println(F("Forzando sincronización..."));
+    performFullSync(now);
+    
+  } else if (command == "STATUS") {
+    showStatus(now);
+    
+  } else if (command == "ENABLE") {
+    enableMotor(true);
+    Serial.println(F("Motor habilitado"));
+    
+  } else if (command == "DISABLE") {
+    enableMotor(false);
+    Serial.println(F("Motor deshabilitado"));
+    
+  } else if (command == "RESET") {
+    Serial.println(F("Restableciendo posición a 12:00..."));
+    currentPosition = 0;
+    accumulatedSteps = 0;
+    Serial.println(F("Posición restablecida. Use SYNC para sincronizar con el RTC"));
+    
   } else {
-    Serial.print("IDLE:");
+    Serial.print(F("Comando desconocido: "));
+    Serial.println(command);
+    Serial.println(F("Comandos: SYNC, STATUS, ENABLE, DISABLE, RESET"));
   }
+}
+
+/*
+ * Mostrar estado del sistema
+ */
+void showStatus(DateTime now) {
+  Serial.println(F("\n===== ESTADO DEL SISTEMA ====="));
+  
+  Serial.print(F("Hora RTC: "));
+  printDateTime(now);
+  
+  Serial.print(F("Temperatura: "));
+  Serial.print(rtc.getTemperature());
+  Serial.println(F(" °C"));
+  
+  Serial.print(F("Posición actual: "));
   Serial.print(currentPosition);
-  Serial.print(":");
-  Serial.println(motorEnabled ? "ENABLED" : "DISABLED");
+  Serial.print(F(" pasos ("));
+  int h, m;
+  stepsToTime(currentPosition, h, m);
+  Serial.print(h);
+  Serial.print(F(":"));
+  if (m < 10) Serial.print(F("0"));
+  Serial.print(m);
+  Serial.println(F(")"));
+  
+  Serial.print(F("Pasos acumulados: "));
+  Serial.println(accumulatedSteps, 2);
+  
+  Serial.print(F("Motor: "));
+  Serial.println(motorEnabled ? F("HABILITADO") : F("DESHABILITADO"));
+  
+  Serial.print(F("Primera sincronización: "));
+  Serial.println(firstSync ? F("PENDIENTE") : F("COMPLETADA"));
+  
+  Serial.println(F("==============================\n"));
 }
 
 /*
@@ -232,44 +347,44 @@ void enableMotor(bool enable) {
 }
 
 /*
- * Ejecutar un paso del motor
+ * Convertir pasos a hora
  */
-void moveOneStep() {
-  if (currentPosition == targetPosition) {
-    isMoving = false;
-    enableMotor(false);
-    Serial.print("OK:");
-    Serial.println(currentPosition);
-    return;
-  }
+void stepsToTime(long steps, int &hours, int &minutes) {
+  long normalizedSteps = steps % TOTAL_STEPS;
+  if (normalizedSteps < 0) normalizedSteps += TOTAL_STEPS;
   
-  // Determinar dirección
-  bool forward = (targetPosition > currentPosition);
-  digitalWrite(PIN_DIR, forward ? HIGH : LOW);
+  float totalMinutes = normalizedSteps / STEPS_PER_MINUTE;
+  hours = (int)(totalMinutes / 60);
+  minutes = (int)totalMinutes % 60;
   
-  // Generar pulso
-  digitalWrite(PIN_PUL, HIGH);
-  delayMicroseconds(MIN_PULSE_WIDTH_US);
-  digitalWrite(PIN_PUL, LOW);
-  delayMicroseconds(PULSE_DELAY_US);
-  
-  // Actualizar posición
-  if (forward) {
-    currentPosition++;
-  } else {
-    currentPosition--;
-  }
+  if (hours == 0) hours = 12;
 }
 
 /*
- * Convertir posición a hora (para debug)
+ * Imprimir fecha y hora completa
  */
-void positionToTime(long position, int &hours, int &minutes) {
-  long normalizedPos = position % TOTAL_STEPS;
-  if (normalizedPos < 0) normalizedPos += TOTAL_STEPS;
-  
-  hours = normalizedPos / STEPS_PER_HOUR;
-  minutes = (normalizedPos % STEPS_PER_HOUR) / STEPS_PER_MINUTE;
-  
-  if (hours == 0) hours = 12;
+void printDateTime(DateTime dt) {
+  Serial.print(dt.year(), DEC);
+  Serial.print('/');
+  if (dt.month() < 10) Serial.print('0');
+  Serial.print(dt.month(), DEC);
+  Serial.print('/');
+  if (dt.day() < 10) Serial.print('0');
+  Serial.print(dt.day(), DEC);
+  Serial.print(" ");
+  printTime(dt);
+}
+
+/*
+ * Imprimir solo la hora
+ */
+void printTime(DateTime dt) {
+  if (dt.hour() < 10) Serial.print('0');
+  Serial.print(dt.hour(), DEC);
+  Serial.print(':');
+  if (dt.minute() < 10) Serial.print('0');
+  Serial.print(dt.minute(), DEC);
+  Serial.print(':');
+  if (dt.second() < 10) Serial.print('0');
+  Serial.print(dt.second(), DEC);
 }
