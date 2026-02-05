@@ -26,6 +26,7 @@
 
 #include <Wire.h>
 #include <RTClib.h>
+#include <EEPROM.h>
 
 // Definición de pines
 #define PIN_PUL 8    // Señal de pulsos al driver
@@ -33,18 +34,19 @@
 #define PIN_EN  10   // Señal de habilitación
 
 // Constantes del motor
-#define STEPS_PER_REV 200           // Pasos por revolución del motor (1.8° por paso)
-#define MICROSTEPS 1                // Micropasos configurados en el driver
-#define GEAR_RATIO 20               // Relación de reducción de la caja reductora
-#define TOTAL_STEPS (STEPS_PER_REV * MICROSTEPS * GEAR_RATIO)  // 4000 pasos totales por revolución
-
-// Constantes del reloj
-#define STEPS_PER_HOUR (TOTAL_STEPS / 12)      // Pasos para una hora (333.33 pasos/hora)
-#define STEPS_PER_MINUTE (STEPS_PER_HOUR / 60) // Pasos por minuto (5.55 pasos/min)
+#define STEPS_PER_HOUR 800000L      // Pasos que da el motor por hora (1 revolución completa)
+#define STEPS_PER_MINUTE (STEPS_PER_HOUR / 60)  // Pasos por minuto (13,333.33 pasos/min)
+#define TOTAL_STEPS (STEPS_PER_HOUR * 12)  // Pasos totales en 12 horas (9,600,000 pasos)
 
 // Velocidad del motor
-#define PULSE_DELAY_US 1000         // Microsegundos entre pulsos
+#define PULSE_DELAY_US 4421         // Microsegundos entre pulsos (calibrado para 1 rev/hora)
+#define SYNC_PULSE_DELAY_US 10     // Microsegundos para sincronización rápida
 #define MIN_PULSE_WIDTH_US 5        // Ancho mínimo del pulso
+
+// Direcciones EEPROM
+#define EEPROM_POSITION_ADDR 0      // Dirección para guardar currentPosition (4 bytes)
+#define EEPROM_VALID_ADDR 4         // Dirección para marca de validez (1 byte)
+#define EEPROM_VALID_MARKER 0xAA    // Valor que indica que hay datos válidos
 
 // Variables globales
 RTC_DS3231 rtc;                     // Objeto RTC
@@ -55,6 +57,14 @@ bool motorEnabled = false;          // Estado del motor
 
 // Variables para cálculo preciso de posición
 float accumulatedSteps = 0.0;       // Acumulador de pasos fraccionarios
+
+// Declaraciones de funciones
+void moveSteps(long steps, bool useFastSpeed = false);
+void performFullSync(DateTime now);
+void moveOneMinute();
+void enableMotor(bool enable);
+void savePositionToEEPROM();
+bool loadPositionFromEEPROM();
 
 void setup() {
   // Configurar pines como salidas
@@ -91,6 +101,13 @@ void setup() {
   // Mostrar hora actual del RTC
   DateTime now = rtc.now();
   printDateTime(now);
+  
+  // Intentar recuperar posición desde EEPROM
+  if (loadPositionFromEEPROM()) {
+    Serial.println(F("Sistema recuperado desde última posición guardada"));
+  } else {
+    Serial.println(F("No hay posición guardada, iniciando desde 0"));
+  }
   
   // Leer temperatura del DS3231
   float temp = rtc.getTemperature();
@@ -182,9 +199,13 @@ void performFullSync(DateTime now) {
   Serial.print(abs(diff));
   Serial.print(F(" pasos "));
   Serial.println(diff > 0 ? F("hacia adelante") : F("hacia atrás"));
+  Serial.println(F("Usando velocidad rápida para sincronización..."));
   
-  // Realizar movimiento
-  moveSteps(diff);
+  // Realizar movimiento a velocidad rápida
+  moveSteps(diff, true);
+  
+  // Guardar posición en EEPROM
+  savePositionToEEPROM();
   
   Serial.println(F("Sincronización completa finalizada\n"));
 }
@@ -202,14 +223,20 @@ void moveOneMinute() {
   
   if (stepsToMove > 0) {
     moveSteps(stepsToMove);
+    
+    // Guardar posición en EEPROM cada 10 minutos
+    if (lastMinute % 10 == 0) {
+      savePositionToEEPROM();
+    }
   }
 }
 
 /*
  * Mover el motor N pasos
  * steps puede ser positivo (adelante) o negativo (atrás)
+ * useFastSpeed: usar velocidad rápida para sincronización
  */
-void moveSteps(long steps) {
+void moveSteps(long steps, bool useFastSpeed = false) {
   if (steps == 0) return;
   
   // Determinar dirección
@@ -219,6 +246,9 @@ void moveSteps(long steps) {
   // Habilitar motor
   enableMotor(true);
   
+  // Seleccionar velocidad
+  int pulseDelay = useFastSpeed ? SYNC_PULSE_DELAY_US : PULSE_DELAY_US;
+  
   // Realizar pasos
   long absSteps = abs(steps);
   for (long i = 0; i < absSteps; i++) {
@@ -226,7 +256,7 @@ void moveSteps(long steps) {
     digitalWrite(PIN_PUL, HIGH);
     delayMicroseconds(MIN_PULSE_WIDTH_US);
     digitalWrite(PIN_PUL, LOW);
-    delayMicroseconds(PULSE_DELAY_US);
+    delayMicroseconds(pulseDelay);
     
     // Actualizar posición
     if (forward) {
@@ -344,6 +374,29 @@ void showStatus(DateTime now) {
 void enableMotor(bool enable) {
   motorEnabled = enable;
   digitalWrite(PIN_EN, enable ? LOW : HIGH);  // EN activo en BAJO
+}
+
+/*
+ * Guardar posición actual en EEPROM
+ */
+void savePositionToEEPROM() {
+  EEPROM.put(EEPROM_POSITION_ADDR, currentPosition);
+  EEPROM.write(EEPROM_VALID_ADDR, EEPROM_VALID_MARKER);
+}
+
+/*
+ * Cargar posición desde EEPROM
+ * Retorna true si se cargó correctamente
+ */
+bool loadPositionFromEEPROM() {
+  if (EEPROM.read(EEPROM_VALID_ADDR) == EEPROM_VALID_MARKER) {
+    EEPROM.get(EEPROM_POSITION_ADDR, currentPosition);
+    Serial.print(F("Posición recuperada de EEPROM: "));
+    Serial.print(currentPosition);
+    Serial.println(F(" pasos"));
+    return true;
+  }
+  return false;
 }
 
 /*
