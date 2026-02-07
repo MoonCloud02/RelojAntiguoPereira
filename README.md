@@ -124,6 +124,8 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 - Sincronización automática del reloj físico con la hora del RTC
 - Gestión de la lógica de movimiento del reloj
 - Detección y recuperación ante cortes de energía
+- Almacenamiento persistente de posición en tarjeta SD
+- Control automático de iluminación del reloj (6pm-5am)
 
 **Conexiones al Driver BH86:**
 - Pin 8 → PUL+ (señal de pulsos)
@@ -138,6 +140,18 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 - SCL (A5) → SCL del DS3231
 - 5V → VCC del DS3231
 - GND → GND del DS3231
+
+**Conexiones al Módulo MicroSD:**
+- Pin 4 → CS (Chip Select)
+- Pin 11 → MOSI (automático con SPI)
+- Pin 12 → MISO (automático con SPI)
+- Pin 13 → SCK (automático con SPI)
+- 5V → VCC
+- GND → GND
+
+**Conexión Relé de Estado Sólido:**
+- Pin 7 → Control del relé (reflector LED)
+- GND → GND del relé
 
 #### Módulo RTC DS3231
 **Función:** Reloj de Tiempo Real de alta precisión
@@ -167,6 +181,48 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 5. En caso de corte de energía, el DS3231 mantiene la hora con su batería
 6. Al restaurarse la energía, el Arduino lee la hora correcta y sincroniza el reloj físico automáticamente
 
+#### Módulo MicroSD Card Adapter
+**Función:** Almacenamiento persistente de la posición del motor
+
+**Características:**
+- **Interfaz:** SPI (Serial Peripheral Interface)
+- **Voltaje de operación:** 3.3V - 5V (regulador integrado)
+- **Compatibilidad:** Tarjetas microSD y microSDHC
+- **Velocidad:** Hasta 25 MHz en modo SPI
+- **Formato:** FAT16/FAT32
+
+**Ventajas del Almacenamiento en SD:**
+- Mayor capacidad de almacenamiento vs EEPROM
+- Posibilidad de registrar historial de operación
+- Fácil lectura de datos mediante PC (insertar tarjeta en lector)
+- Mayor durabilidad (las SD modernas soportan millones de escrituras)
+- Permite guardar múltiples parámetros y configuraciones
+
+**Funcionamiento:**
+1. Cada minuto, tras actualizar la posición del motor, se guarda en archivo `position.txt`
+2. El archivo contiene el número de pasos actual del motor
+3. Al iniciar el sistema, se lee la última posición guardada
+4. Permite recuperación exacta de posición tras cortes de energía
+5. Mensajes de diagnóstico cada 30 minutos en el monitor serial
+
+#### Sistema de Iluminación Automática
+**Función:** Control de reflector LED para iluminación nocturna del reloj
+
+**Componentes:**
+- **Relé de Estado Sólido:** Control ON/OFF del reflector LED
+- **Reflector LED:** Iluminación externa del reloj de torre
+
+**Horario de Operación:**
+- **Encendido automático:** 6:00 PM (18:00)
+- **Apagado automático:** 5:00 AM (05:00)
+- **Control manual:** Comandos LIGHT_ON / LIGHT_OFF disponibles
+
+**Características:**
+- Sincronizado con RTC DS3231 para precisión horaria
+- Control automático sin intervención manual
+- Posibilidad de override manual mediante comandos serial
+- Estado visible en comando STATUS
+
 ## 🔌 Esquema de Conexión
 
 ### Cableado del Motor
@@ -195,22 +251,66 @@ Vista desde el lado de montaje:
 
 ### Diagrama de Conexión del Sistema Completo
 
-```
-Fuente 48V DC                  Arduino UNO (5V)
-    │                               │
-    ├─ V+ ──────────┐              │
-    └─ V- ──────────┼───────────── GND común
-                    │               │
-              Driver BH86           │
-                    │               │
-    ┌───────────────┼───────────────┼──────────┐
-    │               │               │          │
-Motor           Encoder         Control    RTC DS3231
-(A+,A-,B+,B-)   (EA+,EA-,       (PUL,DIR,  (SDA,SCL)
-                 EB+,EB-)        EN)       + Batería CR2032
+```mermaid
+graph TB
+    subgraph Alimentación
+        PSU[Fuente 48V DC<br/>6.25A - 300W]
+    end
+    
+    subgraph Control
+        ARD[Arduino UNO<br/>Controlador Principal]
+        RTC[RTC DS3231<br/>I2C - 0x68<br/>Batería CR2032]
+        SD[MicroSD Card<br/>SPI - Pin 4 CS<br/>position.txt]
+        RELAY[Relé Estado Sólido<br/>Pin 7]
+    end
+    
+    subgraph Motor_System[Sistema Motor]
+        DRV[Driver BH86<br/>Lazo Cerrado]
+        MOT[Motor Paso a Paso<br/>86HBD5401<br/>6.4A/fase]
+        ENC[Encoder 1000 CPR<br/>Retroalimentación]
+        GBX[Caja Reductora<br/>20:1]
+    end
+    
+    subgraph Iluminación
+        LED[Reflector LED<br/>Iluminación Nocturna]
+    end
+    
+    PSU -->|48V| DRV
+    PSU -->|GND| GND[GND Común]
+    
+    ARD -->|Pin 8: PUL| DRV
+    ARD -->|Pin 9: DIR| DRV
+    ARD -->|Pin 10: EN| DRV
+    ARD -->|A4/A5: I2C| RTC
+    ARD -->|Pin 4,11-13: SPI| SD
+    ARD -->|Pin 7: Control| RELAY
+    ARD -->|GND| GND
+    
+    DRV -->|A+,A-,B+,B-| MOT
+    DRV -->|Encoder| ENC
+    ENC -->|Feedback| DRV
+    
+    MOT -->|Eje| GBX
+    GBX -->|Salida 20:1| CLOCK[⏰ Reloj de Torre]
+    
+    RELAY -->|ON/OFF| LED
+    LED -->|6pm-5am| CLOCK
+    
+    RTC -.->|Mantiene Hora| ARD
+    SD -.->|Guarda Posición| ARD
+    
+    style ARD fill:#4CAF50
+    style RTC fill:#2196F3
+    style SD fill:#FF9800
+    style DRV fill:#9C27B0
+    style MOT fill:#F44336
+    style RELAY fill:#FFC107
+    style LED fill:#FFEB3B
 ```
 
-### Conexiones Arduino UNO ↔ Driver BH86
+### Conexiones Arduino UNO ↔ Componentes
+
+#### Arduino UNO ↔ Driver BH86
 | Pin Arduino | Señal Driver | Función |
 |-------------|--------------|---------|
 | Pin 8       | PUL+         | Generación de pulsos |
@@ -220,28 +320,29 @@ Motor           Encoder         Control    RTC DS3231
 | Pin 10      | EN+          | Habilitación motor |
 | GND         | EN-          | Tierra señal enable |
 
-### Conexiones Arduino UNO ↔ ESP32
-| Arduino UNO | ESP32   | Función |
-|-------------|---------|---------|
-| TX (Pin 1)  | RX2 (GPIO 16) | Transmisión Arduino → ESP32 |
-| RX (Pin 0)  | TX2 (GPIO 17) | Recepción ESP32 → Arduino |
-| GND         | GND     | Tierra común |
+#### Arduino UNO ↔ RTC DS3231
+| Pin Arduino | Señal DS3231 | Función |
+|-------------|--------------|---------|
+| A4 (SDA)    | SDA          | Datos I2C |
+| A5 (SCL)    | SCL          | Clock I2C |
+| 5V          | VCC          | Alimentación |
+| GND         | GND          | Tierra |
 
-### Protocolo de Comunicación Serial
-**Baudrate:** 9600 bps  
-**Formato:** 8N1 (8 bits de datos, sin paridad, 1 bit de parada)
+#### Arduino UNO ↔ Módulo MicroSD
+| Pin Arduino | Señal SD     | Función |
+|-------------|--------------|---------|
+| Pin 4       | CS           | Chip Select |
+| Pin 11      | MOSI         | Master Out Slave In (SPI) |
+| Pin 12      | MISO         | Master In Slave Out (SPI) |
+| Pin 13      | SCK          | Serial Clock (SPI) |
+| 5V          | VCC          | Alimentación |
+| GND         | GND          | Tierra |
 
-**Comandos ESP32 → Arduino:**
-- `MOVE:<pasos>` - Mover reloj X pasos adelante (positivo) o atrás (negativo)
-- `SYNC:<hh:mm>` - Sincronizar a hora específica
-- `STOP` - Detener movimiento inmediato
-- `STATUS?` - Solicitar estado actual
-
-**Respuestas Arduino → ESP32:**
-- `OK:<posicion>` - Comando ejecutado, posición actual
-- `MOVING` - Motor en movimiento
-- `IDLE` - Motor detenido
-- `ERROR:<código>` - Error en ejecución
+#### Arduino UNO ↔ Relé Estado Sólido
+| Pin Arduino | Señal Relé   | Función |
+|-------------|--------------|---------|
+| Pin 7       | Control      | Señal activación reflector |
+| GND         | GND          | Tierra |
 
 ## 🛠️ Instalación
 
@@ -258,7 +359,9 @@ Motor           Encoder         Control    RTC DS3231
 4. Conectar Arduino UNO al driver según tabla de conexiones (pines 8, 9, 10)
 5. Conectar módulo RTC DS3231 al Arduino mediante I2C (pines A4/SDA y A5/SCL)
 6. Instalar batería CR2032 en el módulo DS3231 (usualmente viene incluida)
-7. Asegurar GND común entre todos los componentes
+7. Conectar módulo MicroSD al Arduino mediante SPI (pin 4 CS, pines 11-13 SPI)
+8. Conectar relé de estado sólido al pin 7 del Arduino para control del reflector
+9. Asegurar GND común entre todos los componentes
 
 ### 3. Configuración del Driver
 1. Verificar los parámetros de corriente según las especificaciones del motor (6.4A)
@@ -269,20 +372,43 @@ Motor           Encoder         Control    RTC DS3231
 1. **Instalar Librerías Necesarias:**
    - RTClib by Adafruit (para el DS3231)
    - Wire (incluida con Arduino IDE para comunicación I2C)
+   - SPI (incluida con Arduino IDE para comunicación SPI)
+   - SD (incluida con Arduino IDE para tarjeta SD)
 
-2. **Cargar Firmware:** [arduino_uno_control.ino](arduino_uno_control.ino)
-   - Configurar pines de salida para PUL, DIR, EN
+2. **Preparar Tarjeta MicroSD:**
+   - Formatear tarjeta en formato FAT16 o FAT32
+   - La tarjeta debe estar vacía o tener espacio disponible
+   - El sistema creará automáticamente el archivo `position.txt`
+
+3. **Cargar Firmware:** [arduino_uno_control.ino](arduino_uno_control.ino)
+   - Configurar pines de salida para PUL, DIR, EN, RELAY
    - Inicializar comunicación I2C con DS3231
+   - Inicializar comunicación SPI con módulo SD
    - Implementar lógica de lectura continua del RTC
    - Configurar sincronización automática del reloj físico
    - Implementar detección de arranque inicial
+   - Configurar sistema de almacenamiento persistente en SD
+   - Implementar control automático de iluminación (6pm-5am)
 
 ### 5. Calibración Inicial
-1. Establecer la hora correcta en el DS3231 mediante el sketch de configuración
-2. Posicionar manualmente las manecillas del reloj a la hora actual
-3. Reiniciar el Arduino para iniciar la sincronización automática
-4. Verificar movimiento correcto del motor (debe avanzar un paso por minuto)
-5. Confirmar que la hora del DS3231 se mantiene tras desconectar alimentación externa
+1. Insertar tarjeta MicroSD formateada en el módulo
+2. Establecer la hora correcta en el DS3231 mediante el sketch de configuración
+3. Posicionar manualmente las manecillas del reloj a las 12:00
+4. Enviar comando `RESET` para establecer posición cero
+5. Enviar comando `SYNC` para sincronizar con la hora del RTC
+6. Verificar movimiento correcto del motor (debe avanzar cada minuto)
+7. Confirmar que la posición se guarda en SD (revisar archivo `position.txt`)
+8. Confirmar que la hora del DS3231 se mantiene tras desconectar alimentación externa
+9. Verificar que el reflector LED se enciende/apaga según horario configurado
+
+**Comandos Disponibles:**
+- `SYNC` - Sincronizar reloj con hora del RTC
+- `STATUS` - Mostrar estado completo del sistema
+- `ENABLE` - Habilitar motor
+- `DISABLE` - Deshabilitar motor
+- `RESET` - Restablecer posición a 12:00
+- `LIGHT_ON` - Encender reflector manualmente
+- `LIGHT_OFF` - Apagar reflector manualmente
 
 ## ⚙️ Cálculos de Operación
 
@@ -363,12 +489,29 @@ Resolución angular = 360° / 80,000 = 0.0045° por paso
    - Probar la sincronización tras desconexión en ambiente controlado
    - No desconectar el DS3231 con el sistema en funcionamiento
 
+5. **Almacenamiento en SD:**
+   - Utilizar tarjetas microSD de marca confiable (SanDisk, Samsung, Kingston)
+   - Formatear la tarjeta en FAT16 o FAT32 antes del primer uso
+   - No remover la tarjeta SD mientras el sistema está en operación
+   - Verificar periódicamente que el archivo `position.txt` se está actualizando
+   - Hacer respaldo del archivo de posición antes de mantenimientos mayores
+   - Reemplazar tarjeta SD cada 2-3 años como medida preventiva
+
+6. **Sistema de Iluminación:**
+   - Verificar capacidad del relé de estado sólido según potencia del reflector LED
+   - Asegurar correcta conexión y aislamiento del cableado del reflector
+   - El relé debe soportar la corriente del reflector con margen de seguridad
+   - Verificar funcionamiento del reflector durante ciclo completo (encendido/apagado)
+   - Ajustar horarios en el código si se requiere diferente programación
+
 ## 📝 Documentación Técnica
 
 - [GearBox.pdf](GearBox.pdf) - Especificaciones de la caja reductora planetaria
 - [MotorDriver.pdf](MotorDriver.pdf) - Especificaciones del motor y driver
-- [arduino_uno_control.ino](arduino_uno_control.ino) - Firmware completo para Arduino UNO con DS3231
-- [set_rtc_time.ino](set_rtc_time.ino) - Sketch para configurar la hora inicial del DS3231
+- [arduino_uno_control.ino](arduino_uno_control/arduino_uno_control.ino) - Firmware completo con SD, RTC DS3231 y control de iluminación
+- [set_rtc_time.ino](set_rtc_time/set_rtc_time.ino) - Sketch para configurar la hora inicial del DS3231
+- [i2c_scanner.ino](i2c_scanner/i2c_scanner.ino) - Utilidad para detectar dispositivos I2C
+- [test_motor.ino](test_motor/test_motor.ino) - Sketch de prueba del motor paso a paso
 
 ## 🏛️ Contexto Histórico
 
