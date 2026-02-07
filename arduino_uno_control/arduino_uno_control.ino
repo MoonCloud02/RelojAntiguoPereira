@@ -38,7 +38,7 @@
 
 // Definición de pines
 #define PIN_CS  4    // Chip Select para módulo SD
-#define PIN_RELAY 7  // Control de relé para reflector LED
+#define PIN_RELAY 7  // Control de relé para reflector LED (Low Level Trigger: LOW=ON, HIGH=OFF)
 #define PIN_PUL 8    // Señal de pulsos al driver
 #define PIN_DIR 9    // Señal de dirección
 #define PIN_EN  10   // Señal de habilitación
@@ -92,7 +92,7 @@ void setup() {
   digitalWrite(PIN_PUL, LOW);
   digitalWrite(PIN_DIR, LOW);
   digitalWrite(PIN_EN, HIGH);  // EN activo en BAJO, así que HIGH = deshabilitado
-  digitalWrite(PIN_RELAY, LOW);  // Relé inicialmente apagado
+  digitalWrite(PIN_RELAY, HIGH);  // Relé Low Level Trigger: HIGH = apagado
   
   // Inicializar comunicación serial
   Serial.begin(9600);
@@ -353,12 +353,12 @@ void processCommand(String command, DateTime now) {
     Serial.println(F("Posición restablecida. Use SYNC para sincronizar con el RTC"));
     
   } else if (command == "LIGHT_ON") {
-    digitalWrite(PIN_RELAY, HIGH);
+    digitalWrite(PIN_RELAY, LOW);  // Low Level Trigger: LOW = ON
     relayState = true;
     Serial.println(F("Reflector encendido manualmente"));
     
   } else if (command == "LIGHT_OFF") {
-    digitalWrite(PIN_RELAY, LOW);
+    digitalWrite(PIN_RELAY, HIGH);  // Low Level Trigger: HIGH = OFF
     relayState = false;
     Serial.println(F("Reflector apagado manualmente"));
     
@@ -542,6 +542,7 @@ void printTime(DateTime dt) {
 /*
  * Controlar el reflector LED según horario
  * Encendido: 6pm (18:00) - Apagado: 5am (05:00)
+ * Nota: Relé Low Level Trigger - LOW=ON, HIGH=OFF
  */
 void controlReflector(DateTime now) {
   int currentHour = now.hour();
@@ -554,14 +555,15 @@ void controlReflector(DateTime now) {
   }
   
   // Cambiar estado solo si es necesario
+  // Low Level Trigger: LOW = ON, HIGH = OFF
   if (shouldBeOn && !relayState) {
-    digitalWrite(PIN_RELAY, HIGH);
+    digitalWrite(PIN_RELAY, LOW);  // Encender reflector
     relayState = true;
     Serial.print(F("Reflector encendido automáticamente a las "));
     printTime(now);
     Serial.println();
   } else if (!shouldBeOn && relayState) {
-    digitalWrite(PIN_RELAY, LOW);
+    digitalWrite(PIN_RELAY, HIGH);  // Apagar reflector
     relayState = false;
     Serial.print(F("Reflector apagado automáticamente a las "));
     printTime(now);
