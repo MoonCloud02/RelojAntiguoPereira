@@ -53,8 +53,10 @@
 #define SYNC_PULSE_DELAY_US 10     // Microsegundos para sincronización rápida
 #define MIN_PULSE_WIDTH_US 5        // Ancho mínimo del pulso
 
-// Configuración de almacenamiento SD
-#define POSITION_FILE "position.txt"  // Archivo para guardar la posición
+// Configuración de almacenamiento SD con Wear Leveling
+#define POSITION_FILE_PREFIX "pos_"    // Prefijo para archivos de posición
+#define POSITION_FILE_EXT ".txt"       // Extensión de archivos
+#define NUM_SLOTS 100                   // Número de slots para wear leveling (0-99)
 
 // Configuración de iluminación
 #define LIGHT_ON_HOUR 18   // Hora de encendido (6pm)
@@ -67,6 +69,8 @@ int lastMinute = -1;                // Último minuto procesado
 bool firstSync = true;              // Indica si es la primera sincronización
 bool motorEnabled = false;          // Estado del motor
 bool relayState = false;            // Estado del relé del reflector
+unsigned long lastSavedTimestamp = 0; // Timestamp de la última posición guardada
+int currentSlot = 0;                // Slot actual para wear leveling (0-99)
 
 // Variables para cálculo preciso de posición
 float accumulatedSteps = 0.0;       // Acumulador de pasos fraccionarios
@@ -129,6 +133,25 @@ void setup() {
   // Intentar recuperar posición desde SD
   if (loadPositionFromSD()) {
     Serial.println(F("Sistema recuperado desde última posición guardada en SD"));
+    
+    // Verificar coherencia con RTC
+    if (lastSavedTimestamp > 0) {
+      unsigned long currentTimestamp = now.unixtime();
+      unsigned long elapsedSeconds = currentTimestamp - lastSavedTimestamp;
+      
+      // Si pasó mucho tiempo (más de 1 hora), advertir y resincronizar
+      if (elapsedSeconds > 3600) {
+        Serial.print(F("ADVERTENCIA: Pasaron "));
+        Serial.print(elapsedSeconds / 60);
+        Serial.println(F(" minutos desde el último guardado"));
+        Serial.println(F("Se recomienda verificar la sincronización"));
+        firstSync = true;  // Forzar resincronización completa
+      } else {
+        Serial.print(F("Tiempo transcurrido: "));
+        Serial.print(elapsedSeconds);
+        Serial.println(F(" segundos"));
+      }
+    }
   } else {
     Serial.println(F("No hay posición guardada, iniciando desde 0"));
   }
@@ -405,6 +428,20 @@ void showStatus(DateTime now) {
   Serial.print(F("Primera sincronización: "));
   Serial.println(firstSync ? F("PENDIENTE") : F("COMPLETADA"));
   
+  Serial.print(F("Último guardado: "));
+  if (lastSavedTimestamp > 0) {
+    DateTime savedTime = DateTime(lastSavedTimestamp);
+    printDateTime(savedTime);
+    Serial.println();
+  } else {
+    Serial.println(F("N/A"));
+  }
+  
+  Serial.print(F("Wear Leveling: Slot actual "));
+  Serial.print(currentSlot);
+  Serial.print(F("/"));
+  Serial.println(NUM_SLOTS - 1);
+  
   Serial.println(F("==============================\n"));
 }
 
@@ -430,37 +467,56 @@ bool initializeSD() {
   
   Serial.println(F(" OK"));
   
-  // Verificar si existe el archivo de posición
-  if (SD.exists(POSITION_FILE)) {
-    Serial.println(F("Archivo de posición encontrado en SD"));
-  } else {
-    Serial.println(F("Creando nuevo archivo de posición"));
-  }
+  // Sistema de wear leveling con 100 slots
+  Serial.println(F("Sistema de wear leveling inicializado (100 slots)"));
   
   return true;
 }
 
 /*
- * Guardar posición actual en tarjeta SD
+ * Guardar posición actual en tarjeta SD con Wear Leveling
+ * Formato: posición,timestamp
+ * Usa rotación de 100 slots para extender vida útil de la SD
  */
 void savePositionToSD() {
-  // Eliminar archivo anterior si existe
-  if (SD.exists(POSITION_FILE)) {
-    SD.remove(POSITION_FILE);
+  // Obtener timestamp actual
+  DateTime now = rtc.now();
+  unsigned long timestamp = now.unixtime();
+  
+  // Construir nombre de archivo para el slot actual
+  char filename[16];
+  sprintf(filename, "%s%03d%s", POSITION_FILE_PREFIX, currentSlot, POSITION_FILE_EXT);
+  
+  // Eliminar archivo del slot actual si existe
+  if (SD.exists(filename)) {
+    SD.remove(filename);
   }
   
-  // Crear y escribir archivo
-  File dataFile = SD.open(POSITION_FILE, FILE_WRITE);
+  // Crear y escribir archivo en el slot actual
+  File dataFile = SD.open(filename, FILE_WRITE);
   
   if (dataFile) {
-    dataFile.println(currentPosition);
+    // Guardar posición y timestamp separados por coma
+    dataFile.print(currentPosition);
+    dataFile.print(",");
+    dataFile.println(timestamp);
     dataFile.close();
+    
+    // Actualizar timestamp en memoria
+    lastSavedTimestamp = timestamp;
+    
+    // Avanzar al siguiente slot (rotación circular 0-99)
+    currentSlot = (currentSlot + 1) % NUM_SLOTS;
     
     // Mensaje de depuración cada 30 minutos
     if (lastMinute % 30 == 0) {
       Serial.print(F("Posición guardada en SD: "));
       Serial.print(currentPosition);
-      Serial.println(F(" pasos"));
+      Serial.print(F(" pasos @ "));
+      printTime(now);
+      Serial.print(F(" (slot "));
+      Serial.print((currentSlot - 1 + NUM_SLOTS) % NUM_SLOTS); // Mostrar slot usado
+      Serial.println(F(")"));
     }
   } else {
     Serial.println(F("ERROR: No se pudo escribir en la tarjeta SD"));
@@ -468,30 +524,74 @@ void savePositionToSD() {
 }
 
 /*
- * Cargar posición desde tarjeta SD
+ * Cargar posición desde tarjeta SD con Wear Leveling
+ * Busca el archivo más reciente entre todos los slots
+ * Calcula automáticamente el siguiente slot a usar
+ * Formato: posición,timestamp
  * Retorna true si se cargó correctamente
  */
 bool loadPositionFromSD() {
-  if (!SD.exists(POSITION_FILE)) {
-    Serial.println(F("No se encontró archivo de posición en SD"));
-    return false;
+  // Buscar el archivo más reciente entre todos los slots
+  unsigned long newestTimestamp = 0;
+  long newestPosition = 0;
+  int newestSlot = -1;
+  bool foundAny = false;
+  
+  Serial.println(F("Buscando última posición guardada..."));
+  
+  for (int slot = 0; slot < NUM_SLOTS; slot++) {
+    char filename[16];
+    sprintf(filename, "%s%03d%s", POSITION_FILE_PREFIX, slot, POSITION_FILE_EXT);
+    
+    if (SD.exists(filename)) {
+      File dataFile = SD.open(filename, FILE_READ);
+      
+      if (dataFile) {
+        String line = dataFile.readStringUntil('\n');
+        dataFile.close();
+        
+        // Buscar la coma que separa posición y timestamp
+        int commaIndex = line.indexOf(',');
+        
+        if (commaIndex > 0) {
+          long position = line.substring(0, commaIndex).toInt();
+          unsigned long timestamp = line.substring(commaIndex + 1).toInt();
+          
+          // Verificar si este es el más reciente
+          if (timestamp > newestTimestamp) {
+            newestTimestamp = timestamp;
+            newestPosition = position;
+            newestSlot = slot;
+            foundAny = true;
+          }
+        }
+      }
+    }
   }
   
-  File dataFile = SD.open(POSITION_FILE, FILE_READ);
-  
-  if (dataFile) {
-    String positionStr = dataFile.readStringUntil('\n');
-    dataFile.close();
+  if (foundAny) {
+    currentPosition = newestPosition;
+    lastSavedTimestamp = newestTimestamp;
     
-    currentPosition = positionStr.toInt();
+    // Calcular el siguiente slot a usar (siguiente al más reciente encontrado)
+    currentSlot = (newestSlot + 1) % NUM_SLOTS;
     
     Serial.print(F("Posición recuperada de SD: "));
     Serial.print(currentPosition);
-    Serial.println(F(" pasos"));
+    Serial.print(F(" pasos (desde slot "));
+    Serial.print(newestSlot);
+    Serial.print(F(", próximo slot: "));
+    Serial.print(currentSlot);
+    Serial.print(F(", timestamp: "));
+    Serial.print(lastSavedTimestamp);
+    Serial.println(F(")"));
     
     return true;
   } else {
-    Serial.println(F("ERROR: No se pudo leer el archivo de posición"));
+    // No se encontró ningún archivo, empezar desde slot 0
+    currentSlot = 0;
+    Serial.println(F("No se encontró archivo de posición en SD"));
+    Serial.println(F("Iniciando wear leveling desde slot 0"));
     return false;
   }
 }
@@ -559,14 +659,28 @@ void controlReflector(DateTime now) {
   if (shouldBeOn && !relayState) {
     digitalWrite(PIN_RELAY, LOW);  // Encender reflector
     relayState = true;
-    Serial.print(F("Reflector encendido automáticamente a las "));
-    printTime(now);
+    Serial.print(F("\nReflector encendido automáticamente a las "));
+    if (now.hour() < 10) Serial.print('0');
+    Serial.print(now.hour(), DEC);
+    Serial.print(':');
+    if (now.minute() < 10) Serial.print('0');
+    Serial.print(now.minute(), DEC);
+    Serial.print(':');
+    if (now.second() < 10) Serial.print('0');
+    Serial.print(now.second(), DEC);
     Serial.println();
   } else if (!shouldBeOn && relayState) {
     digitalWrite(PIN_RELAY, HIGH);  // Apagar reflector
     relayState = false;
-    Serial.print(F("Reflector apagado automáticamente a las "));
-    printTime(now);
+    Serial.print(F("\nReflector apagado automáticamente a las "));
+    if (now.hour() < 10) Serial.print('0');
+    Serial.print(now.hour(), DEC);
+    Serial.print(':');
+    if (now.minute() < 10) Serial.print('0');
+    Serial.print(now.minute(), DEC);
+    Serial.print(':');
+    if (now.second() < 10) Serial.print('0');
+    Serial.print(now.second(), DEC);
     Serial.println();
   }
 }

@@ -191,19 +191,24 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 - **Velocidad:** Hasta 25 MHz en modo SPI
 - **Formato:** FAT16/FAT32
 
-**Ventajas del Almacenamiento en SD:**
+**Ventajas del Almacenamiento en SD con Wear Leveling:**
+- Sistema de rotación entre 100 slots (archivos) para distribuir el desgaste
+- Vida útil extendida: ~10 años vs. 2-6 meses sin wear leveling
 - Mayor capacidad de almacenamiento vs EEPROM
 - Posibilidad de registrar historial de operación
 - Fácil lectura de datos mediante PC (insertar tarjeta en lector)
-- Mayor durabilidad (las SD modernas soportan millones de escrituras)
 - Permite guardar múltiples parámetros y configuraciones
+- Recuperación automática del archivo más reciente por timestamp
 
-**Funcionamiento:**
-1. Cada minuto, tras actualizar la posición del motor, se guarda en archivo `position.txt`
-2. El archivo contiene el número de pasos actual del motor
-3. Al iniciar el sistema, se lee la última posición guardada
-4. Permite recuperación exacta de posición tras cortes de energía
-5. Mensajes de diagnóstico cada 30 minutos en el monitor serial
+**Funcionamiento con Wear Leveling:**
+1. Cada minuto, tras actualizar la posición del motor, se guarda rotativamente en uno de 100 archivos (`pos_000.txt` a `pos_099.txt`)
+2. Cada archivo contiene: número de pasos actual y timestamp Unix
+3. Al iniciar el sistema, busca entre todos los slots el archivo más reciente por timestamp
+4. El siguiente slot a usar se calcula automáticamente como (slot_más_reciente + 1) % 100
+5. La rotación entre 100 slots distribuye el desgaste y extiende la vida útil de la SD
+6. Vida útil estimada con wear leveling: **~10 años** (vs. 2-6 meses sin wear leveling)
+7. Sistema completamente automático y sin archivos índice adicionales
+8. Mensajes de diagnóstico cada 30 minutos en el monitor serial
 
 #### Sistema de Iluminación Automática
 **Función:** Control de reflector LED para iluminación nocturna del reloj
@@ -378,7 +383,8 @@ graph TB
 2. **Preparar Tarjeta MicroSD:**
    - Formatear tarjeta en formato FAT16 o FAT32
    - La tarjeta debe estar vacía o tener espacio disponible
-   - El sistema creará automáticamente el archivo `position.txt`
+   - El sistema creará automáticamente los archivos de wear leveling (`pos_000.txt` a `pos_099.txt`)
+   - No requiere archivo índice - el sistema calcula automáticamente el siguiente slot desde los archivos existentes
 
 3. **Cargar Firmware:** [arduino_uno_control.ino](arduino_uno_control.ino)
    - Configurar pines de salida para PUL, DIR, EN, RELAY
@@ -387,7 +393,7 @@ graph TB
    - Implementar lógica de lectura continua del RTC
    - Configurar sincronización automática del reloj físico
    - Implementar detección de arranque inicial
-   - Configurar sistema de almacenamiento persistente en SD
+   - Configurar sistema de almacenamiento persistente en SD con wear leveling (100 slots rotativos)
    - Implementar control automático de iluminación (6pm-5am)
 
 ### 5. Calibración Inicial
@@ -395,11 +401,11 @@ graph TB
 2. Establecer la hora correcta en el DS3231 mediante el sketch de configuración
 3. Posicionar manualmente las manecillas del reloj a las 12:00
 4. Enviar comando `RESET` para establecer posición cero
-5. Enviar comando `SYNC` para sincronizar con la hora del RTC
-6. Verificar movimiento correcto del motor (debe avanzar cada minuto)
-7. Confirmar que la posición se guarda en SD (revisar archivo `position.txt`)
-8. Confirmar que la hora del DS3231 se mantiene tras desconectar alimentación externa
-9. Verificar que el reflector LED se enciende/apaga según horario configurado
+4. Enviar comando `SYNC` para sincronizar con la hora del RTC
+5. Verificar movimiento correcto del motor (debe avanzar cada minuto)
+6. Confirmar que la posición se guarda en SD con wear leveling (revisar archivos `pos_XXX.txt`)
+7. Confirmar que la hora del DS3231 se mantiene tras desconectar alimentación externa
+8. Verificar que el reflector LED se enciende/apaga según horario configurado
 
 **Comandos Disponibles:**
 - `SYNC` - Sincronizar reloj con hora del RTC
@@ -493,9 +499,11 @@ Resolución angular = 360° / 80,000 = 0.0045° por paso
    - Utilizar tarjetas microSD de marca confiable (SanDisk, Samsung, Kingston)
    - Formatear la tarjeta en FAT16 o FAT32 antes del primer uso
    - No remover la tarjeta SD mientras el sistema está en operación
-   - Verificar periódicamente que el archivo `position.txt` se está actualizando
-   - Hacer respaldo del archivo de posición antes de mantenimientos mayores
-   - Reemplazar tarjeta SD cada 2-3 años como medida preventiva
+   - El sistema usa wear leveling (100 slots rotativos) para extender vida útil
+   - Verificar periódicamente que los archivos `pos_XXX.txt` se están actualizando
+   - Con wear leveling implementado, la vida útil estimada es de ~19 años
+   - Hacer respaldo de los archivos de posición antes de mantenimientos mayores
+   - Reemplazar tarjeta SD cada 15-20 años o según necesidad
 
 6. **Sistema de Iluminación:**
    - Verificar capacidad del relé de estado sólido según potencia del reflector LED
