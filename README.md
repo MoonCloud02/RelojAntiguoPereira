@@ -193,7 +193,7 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 
 **Ventajas del Almacenamiento en SD con Wear Leveling:**
 - Sistema de rotación entre 1440 slots (archivos) para distribuir el desgaste - 1 slot por minuto del día
-- Vida útil extendida: ~394 años vs. 2-6 meses sin wear leveling
+- Vida útil extendida: ~10 años vs. 2-6 meses sin wear leveling
 - Mayor capacidad de almacenamiento vs EEPROM
 - Posibilidad de registrar historial de operación
 - Fácil lectura de datos mediante PC (insertar tarjeta en lector)
@@ -207,7 +207,7 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 4. Al iniciar el sistema, busca entre todos los slots el archivo más reciente por timestamp (~2 segundos)
 5. El siguiente slot a usar se calcula automáticamente como (slot_más_reciente + 1) % 1440
 6. La rotación entre 1440 slots distribuye óptimamente el desgaste
-7. Vida útil estimada: **~394 años** (1440 slots × 100,000 ciclos ÷ 1 escritura/día)
+7. Vida útil estimada: **~10 años** (1440 slots × 100,000 ciclos ÷ 1 escritura/día)
 8. Sistema completamente automático y sin archivos índice adicionales
 9. Mensajes de diagnóstico cada 30 minutos en el monitor serial
 
