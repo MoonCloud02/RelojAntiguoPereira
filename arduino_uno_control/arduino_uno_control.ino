@@ -56,7 +56,7 @@
 // Configuración de almacenamiento SD con Wear Leveling
 #define POSITION_FILE_PREFIX "pos_"    // Prefijo para archivos de posición
 #define POSITION_FILE_EXT ".txt"       // Extensión de archivos
-#define NUM_SLOTS 100                   // Número de slots para wear leveling (0-99)
+#define NUM_SLOTS 1440                  // Número de slots para wear leveling (1 por minuto del día)
 
 // Configuración de iluminación
 #define LIGHT_ON_HOUR 18   // Hora de encendido (6pm)
@@ -70,7 +70,7 @@ bool firstSync = true;              // Indica si es la primera sincronización
 bool motorEnabled = false;          // Estado del motor
 bool relayState = false;            // Estado del relé del reflector
 unsigned long lastSavedTimestamp = 0; // Timestamp de la última posición guardada
-int currentSlot = 0;                // Slot actual para wear leveling (0-99)
+int currentSlot = 0;                // Slot actual para wear leveling (0-1439)
 
 // Variables para cálculo preciso de posición
 float accumulatedSteps = 0.0;       // Acumulador de pasos fraccionarios
@@ -467,8 +467,8 @@ bool initializeSD() {
   
   Serial.println(F(" OK"));
   
-  // Sistema de wear leveling con 100 slots
-  Serial.println(F("Sistema de wear leveling inicializado (100 slots)"));
+  // Sistema de wear leveling con 1440 slots (1 por minuto del día)
+  Serial.println(F("Sistema de wear leveling inicializado (1440 slots)"));
   
   return true;
 }
@@ -476,7 +476,7 @@ bool initializeSD() {
 /*
  * Guardar posición actual en tarjeta SD con Wear Leveling
  * Formato: posición,timestamp
- * Usa rotación de 100 slots para extender vida útil de la SD
+ * Usa rotación de 1440 slots (1 por minuto del día) para extender vida útil de la SD
  */
 void savePositionToSD() {
   // Obtener timestamp actual
@@ -485,7 +485,7 @@ void savePositionToSD() {
   
   // Construir nombre de archivo para el slot actual
   char filename[16];
-  sprintf(filename, "%s%03d%s", POSITION_FILE_PREFIX, currentSlot, POSITION_FILE_EXT);
+  sprintf(filename, "%s%04d%s", POSITION_FILE_PREFIX, currentSlot, POSITION_FILE_EXT);
   
   // Eliminar archivo del slot actual si existe
   if (SD.exists(filename)) {
@@ -525,7 +525,7 @@ void savePositionToSD() {
 
 /*
  * Cargar posición desde tarjeta SD con Wear Leveling
- * Busca el archivo más reciente entre todos los slots
+ * Busca el archivo más reciente entre todos los 1440 slots
  * Calcula automáticamente el siguiente slot a usar
  * Formato: posición,timestamp
  * Retorna true si se cargó correctamente
@@ -541,7 +541,7 @@ bool loadPositionFromSD() {
   
   for (int slot = 0; slot < NUM_SLOTS; slot++) {
     char filename[16];
-    sprintf(filename, "%s%03d%s", POSITION_FILE_PREFIX, slot, POSITION_FILE_EXT);
+    sprintf(filename, "%s%04d%s", POSITION_FILE_PREFIX, slot, POSITION_FILE_EXT);
     
     if (SD.exists(filename)) {
       File dataFile = SD.open(filename, FILE_READ);

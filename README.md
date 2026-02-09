@@ -192,8 +192,8 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 - **Formato:** FAT16/FAT32
 
 **Ventajas del Almacenamiento en SD con Wear Leveling:**
-- Sistema de rotación entre 100 slots (archivos) para distribuir el desgaste
-- Vida útil extendida: ~10 años vs. 2-6 meses sin wear leveling
+- Sistema de rotación entre 1440 slots (archivos) para distribuir el desgaste - 1 slot por minuto del día
+- Vida útil extendida: ~394 años vs. 2-6 meses sin wear leveling
 - Mayor capacidad de almacenamiento vs EEPROM
 - Posibilidad de registrar historial de operación
 - Fácil lectura de datos mediante PC (insertar tarjeta en lector)
@@ -201,14 +201,15 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 - Recuperación automática del archivo más reciente por timestamp
 
 **Funcionamiento con Wear Leveling:**
-1. Cada minuto, tras actualizar la posición del motor, se guarda rotativamente en uno de 100 archivos (`pos_000.txt` a `pos_099.txt`)
+1. Cada minuto, tras actualizar la posición del motor, se guarda rotativamente en uno de 1440 archivos (`pos_0000.txt` a `pos_1439.txt`)
 2. Cada archivo contiene: número de pasos actual y timestamp Unix
-3. Al iniciar el sistema, busca entre todos los slots el archivo más reciente por timestamp
-4. El siguiente slot a usar se calcula automáticamente como (slot_más_reciente + 1) % 100
-5. La rotación entre 100 slots distribuye el desgaste y extiende la vida útil de la SD
-6. Vida útil estimada con wear leveling: **~10 años** (vs. 2-6 meses sin wear leveling)
-7. Sistema completamente automático y sin archivos índice adicionales
-8. Mensajes de diagnóstico cada 30 minutos en el monitor serial
+3. 1440 slots = 1 slot por cada minuto del día (24h × 60min), cada slot se usa solo 1 vez al día
+4. Al iniciar el sistema, busca entre todos los slots el archivo más reciente por timestamp (~2 segundos)
+5. El siguiente slot a usar se calcula automáticamente como (slot_más_reciente + 1) % 1440
+6. La rotación entre 1440 slots distribuye óptimamente el desgaste
+7. Vida útil estimada: **~394 años** (1440 slots × 100,000 ciclos ÷ 1 escritura/día)
+8. Sistema completamente automático y sin archivos índice adicionales
+9. Mensajes de diagnóstico cada 30 minutos en el monitor serial
 
 #### Sistema de Iluminación Automática
 **Función:** Control de reflector LED para iluminación nocturna del reloj
@@ -383,7 +384,7 @@ graph TB
 2. **Preparar Tarjeta MicroSD:**
    - Formatear tarjeta en formato FAT16 o FAT32
    - La tarjeta debe estar vacía o tener espacio disponible
-   - El sistema creará automáticamente los archivos de wear leveling (`pos_000.txt` a `pos_099.txt`)
+   - El sistema creará automáticamente los archivos de wear leveling (`pos_0000.txt` a `pos_1439.txt`)
    - No requiere archivo índice - el sistema calcula automáticamente el siguiente slot desde los archivos existentes
 
 3. **Cargar Firmware:** [arduino_uno_control.ino](arduino_uno_control.ino)
@@ -393,7 +394,7 @@ graph TB
    - Implementar lógica de lectura continua del RTC
    - Configurar sincronización automática del reloj físico
    - Implementar detección de arranque inicial
-   - Configurar sistema de almacenamiento persistente en SD con wear leveling (100 slots rotativos)
+   - Configurar sistema de almacenamiento persistente en SD con wear leveling (1440 slots rotativos)
    - Implementar control automático de iluminación (6pm-5am)
 
 ### 5. Calibración Inicial
@@ -499,11 +500,11 @@ Resolución angular = 360° / 80,000 = 0.0045° por paso
    - Utilizar tarjetas microSD de marca confiable (SanDisk, Samsung, Kingston)
    - Formatear la tarjeta en FAT16 o FAT32 antes del primer uso
    - No remover la tarjeta SD mientras el sistema está en operación
-   - El sistema usa wear leveling (100 slots rotativos) para extender vida útil
-   - Verificar periódicamente que los archivos `pos_XXX.txt` se están actualizando
-   - Con wear leveling implementado, la vida útil estimada es de ~19 años
+   - El sistema usa wear leveling (1440 slots rotativos, 1 por minuto del día) para extender vida útil
+   - Verificar periódicamente que los archivos `pos_XXXX.txt` se están actualizando
+   - Con wear leveling implementado, la vida útil estimada es de **~394 años**
    - Hacer respaldo de los archivos de posición antes de mantenimientos mayores
-   - Reemplazar tarjeta SD cada 15-20 años o según necesidad
+   - La tarjeta SD durará más que el sistema completo
 
 6. **Sistema de Iluminación:**
    - Verificar capacidad del relé de estado sólido según potencia del reflector LED
