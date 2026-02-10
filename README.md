@@ -2,6 +2,20 @@
 
 Sistema de automatización para reloj de torre histórico utilizando motor paso a paso en lazo cerrado y caja reductora planetaria de alta precisión.
 
+## Indice
+- [Descripcion del Proyecto](#-descripcion-del-proyecto)
+- [Componentes Principales](#-componentes-principales)
+- [Esquema de Conexion](#-esquema-de-conexion)
+- [Instalacion](#-instalacion)
+- [Calculos de Operacion](#-calculos-de-operacion)
+- [Caracteristicas de Proteccion](#-caracteristicas-de-proteccion)
+- [Mantenimiento](#-mantenimiento)
+- [Precauciones](#-precauciones)
+- [Documentacion Tecnica](#-documentacion-tecnica)
+- [Contexto Historico](#-contexto-historico)
+- [Licencia](#-licencia)
+- [Autor](#-autor)
+
 ## 📋 Descripción del Proyecto
 
 Este proyecto implementa un sistema de automatización para el funcionamiento del reloj antiguo de torre, reemplazando el sistema mecánico tradicional por un sistema electromecánico controlado digitalmente. La solución garantiza precisión, confiabilidad y permite el control remoto del mecanismo.
@@ -521,6 +535,7 @@ Resolución angular = 360° / 80,000 = 0.0045° por paso
 - [set_rtc_time.ino](set_rtc_time/set_rtc_time.ino) - Sketch para configurar la hora inicial del DS3231
 - [i2c_scanner.ino](i2c_scanner/i2c_scanner.ino) - Utilidad para detectar dispositivos I2C
 - [test_motor.ino](test_motor/test_motor.ino) - Sketch de prueba del motor paso a paso
+- [CAD Onshape](https://cad.onshape.com/documents/7a94d41e44d45a7d6633cbb7/w/bdb21fbe3c80bdaed3639e33/e/1fa45aad6debaae97b81390c?renderMode=0&uiState=698a7c6923585ca691bb6c61) - Archivos CAD del sistema
 
 ## 🏛️ Contexto Histórico
 
@@ -532,9 +547,9 @@ Este proyecto es privado y de preservación patrimonial.
 
 ## 👤 Autor
 
-Miguel Angel Luna Garcia - Proyecto de automatización de reloj histórico
-Cristian David Alvarez Cardona - Soporte técnico y documentación
+Miguel Angel Luna Garcia - Lider de proyecto de automatización de reloj histórico
+Cristian David Alvarez Cardona - Co-lider de proyecto y soporte técnico
 
 ---
 
-**Última actualización:** Enero 2026
+**Última actualización:** 2 de Febrero 2026
