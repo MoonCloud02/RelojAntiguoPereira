@@ -2,19 +2,19 @@
 
 Sistema de automatización para reloj de torre histórico utilizando motor paso a paso en lazo cerrado y caja reductora planetaria de alta precisión.
 
-## Indice
-- [Descripcion del Proyecto](#-descripcion-del-proyecto)
+## Índice
+- [Descripcion del Proyecto](#-descripción-del-proyecto)
 - [Componentes Principales](#-componentes-principales)
-- [Esquema de Conexion](#-esquema-de-conexion)
-- [Instalacion](#-instalacion)
-- [Calculos de Operacion](#-calculos-de-operacion)
-- [Caracteristicas de Proteccion](#-caracteristicas-de-proteccion)
+- [Esquema de Conexion](#-esquema-de-conexión)
+- [Instalacion](#️-instalación)
+- [Calculos de Operacion](#️-cálculos-de-operación)
+- [Caracteristicas de Proteccion](#-características-de-protección)
 - [Mantenimiento](#-mantenimiento)
-- [Precauciones](#-precauciones)
-- [Documentacion Tecnica](#-documentacion-tecnica)
-- [Contexto Historico](#-contexto-historico)
+- [Precauciones](#️-precauciones)
+- [Documentacion Tecnica](#-documentación-técnica)
+- [Contexto Historico](#️-contexto-histórico)
 - [Licencia](#-licencia)
-- [Autor](#-autor)
+- [Autores](#-autores)
 
 ## 📋 Descripción del Proyecto
 
@@ -545,7 +545,7 @@ Este proyecto preserva la funcionalidad del reloj antiguo de torre de Pereira, c
 
 Este proyecto es privado y de preservación patrimonial.
 
-## 👤 Autor
+## 👤 Autores
 
 Miguel Angel Luna Garcia - Lider de proyecto de automatización de reloj histórico
 Cristian David Alvarez Cardona - Co-lider de proyecto y soporte técnico
