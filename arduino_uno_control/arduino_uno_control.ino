@@ -60,7 +60,7 @@
 
 // Configuración de iluminación
 #define LIGHT_ON_HOUR 18   // Hora de encendido (6pm)
-#define LIGHT_OFF_HOUR 5   // Hora de apagado (5am)
+#define LIGHT_OFF_HOUR 7   // Hora de apagado (7am)
 
 // Variables globales
 RTC_DS3231 rtc;                     // Objeto RTC
