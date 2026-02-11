@@ -289,9 +289,9 @@ void moveOneMinute() {
 void moveSteps(long steps, bool useFastSpeed = false) {
   if (steps == 0) return;
   
-  // Determinar dirección
+  // Determinar dirección (invertida para sentido horario del reloj)
   bool forward = (steps > 0);
-  digitalWrite(PIN_DIR, forward ? HIGH : LOW);
+  digitalWrite(PIN_DIR, forward ? LOW : HIGH);
   
   // Habilitar motor
   enableMotor(true);

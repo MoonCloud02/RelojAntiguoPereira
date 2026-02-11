@@ -5,6 +5,7 @@
  * comandos manuales para verificar el funcionamiento del hardware.
  * 
  * Conexiones:
+ * - Pin 7  -> Control Relé (Reflector LED)
  * - Pin 8  -> PUL+ (Driver BH86)
  * - Pin 9  -> DIR+ (Driver BH86)
  * - Pin 10 -> EN+ (Driver BH86)
@@ -23,6 +24,8 @@
  * - REV [vueltas]  - Dar X revoluciones completas (ejemplo: REV 2)
  * - TEST           - Ejecutar secuencia de prueba
  * - STATUS         - Mostrar estado actual
+ * - LIGHT_ON       - Encender reflector/relé
+ * - LIGHT_OFF      - Apagar reflector/relé
  * 
  * Autor: Miguel Angel Luna Garcia
  * Proyecto: Automatización Reloj Antiguo de Pereira
@@ -33,6 +36,7 @@
 #include <RTClib.h>
 
 // Definición de pines
+#define PIN_RELAY 7  // Control de relé para reflector LED
 #define PIN_PUL 8    // Señal de pulsos al driver
 #define PIN_DIR 9    // Señal de dirección
 #define PIN_EN  10   // Señal de habilitación
@@ -54,16 +58,19 @@ RTC_DS3231 rtc;                      // Objeto RTC
 long currentPosition = 0;            // Posición actual en pasos
 int pulseDelay = DEFAULT_PULSE_DELAY_US; // Delay entre pulsos
 bool motorEnabled = false;           // Estado del motor
+bool relayState = false;             // Estado del relé del reflector
 bool continuousMode = false;         // Modo de movimiento continuo
 bool continuousDirection = true;     // Dirección del movimiento continuo
 
 void setup() {
   // Configurar pines como salidas
+  pinMode(PIN_RELAY, OUTPUT);
   pinMode(PIN_PUL, OUTPUT);
   pinMode(PIN_DIR, OUTPUT);
   pinMode(PIN_EN, OUTPUT);
   
   // Estado inicial
+  digitalWrite(PIN_RELAY, HIGH);  // Relé Low Level Trigger: HIGH = apagado
   digitalWrite(PIN_PUL, LOW);
   digitalWrite(PIN_DIR, LOW);
   digitalWrite(PIN_EN, HIGH);  // EN activo en BAJO, HIGH = deshabilitado
@@ -191,6 +198,16 @@ void processCommand(String input) {
   } else if (command == "RESET") {
     currentPosition = 0;
     Serial.println(F("✓ Posición restablecida a 0"));
+    
+  } else if (command == "LIGHT_ON" || command == "RELAY_ON") {
+    digitalWrite(PIN_RELAY, LOW);  // Low Level Trigger: LOW = ON
+    relayState = true;
+    Serial.println(F("✓ Reflector/Relé ENCENDIDO"));
+    
+  } else if (command == "LIGHT_OFF" || command == "RELAY_OFF") {
+    digitalWrite(PIN_RELAY, HIGH);  // Low Level Trigger: HIGH = OFF
+    relayState = false;
+    Serial.println(F("✓ Reflector/Relé APAGADO"));
     
   } else {
     Serial.print(F("✗ Comando desconocido: "));
@@ -472,6 +489,9 @@ void showStatus() {
   Serial.print(F("Pasos totales/rev: "));
   Serial.println(TOTAL_STEPS);
   
+  Serial.print(F("Reflector/Relé: "));
+  Serial.println(relayState ? F("ENCENDIDO") : F("APAGADO"));
+  
   Serial.println(F("========================================\n"));
 }
 
@@ -506,6 +526,8 @@ void printHelp() {
   Serial.println(F("  STATUS         - Ver estado actual"));
   Serial.println(F("  TEST           - Ejecutar prueba automática"));
   Serial.println(F("  RESET          - Restablecer posición a 0"));
+  Serial.println(F("  LIGHT_ON       - Encender reflector/relé"));
+  Serial.println(F("  LIGHT_OFF      - Apagar reflector/relé"));
   Serial.println(F("  HELP           - Mostrar esta ayuda"));
   Serial.println(F("----------------------------------------"));
   Serial.println(F("\nEjemplos:"));
