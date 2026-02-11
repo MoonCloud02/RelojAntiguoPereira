@@ -191,7 +191,7 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 1. El Arduino lee la hora del DS3231 cada segundo vía I2C
 2. Compara la hora del RTC con la posición física del reloj
 3. Calcula los pasos necesarios para mantener sincronización
-4. Mueve el motor un paso por minuto para mantener el reloj actualizado
+4. Mueve el motor los pasos necesarios por minuto (aproximadamente 13.333 pasos/minuto) para mantener el reloj actualizado
 5. En caso de corte de energía, el DS3231 mantiene la hora con su batería
 6. Al restaurarse la energía, el Arduino lee la hora correcta y sincroniza el reloj físico automáticamente
 
@@ -234,7 +234,7 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 
 **Horario de Operación:**
 - **Encendido automático:** 6:00 PM (18:00)
-- **Apagado automático:** 5:00 AM (05:00)
+- **Apagado automático:** 7:00 AM (07:00)
 - **Control manual:** Comandos LIGHT_ON / LIGHT_OFF disponibles
 
 **Características:**
@@ -378,7 +378,7 @@ graph TB
 3. Conectar la fuente de alimentación 48V DC a V+ y V- del driver
 4. Conectar Arduino UNO al driver según tabla de conexiones (pines 8, 9, 10)
 5. Conectar módulo RTC DS3231 al Arduino mediante I2C (pines A4/SDA y A5/SCL)
-6. Instalar batería CR2032 en el módulo DS3231 (usualmente viene incluida)
+6. Instalar batería CR2032 en el módulo DS3231
 7. Conectar módulo MicroSD al Arduino mediante SPI (pin 4 CS, pines 11-13 SPI)
 8. Conectar relé de estado sólido al pin 7 del Arduino para control del reflector
 9. Asegurar GND común entre todos los componentes
@@ -457,8 +457,8 @@ Torque de salida (estático) = 12.8 N·m × 20 × 0.95 = 243.2 N·m
 ### Resolución Angular
 Con encoder de 1000 CPR y reducción 20:1:
 ```
-Resolución de salida = 1000 × 4 (cuadratura) × 20 = 80,000 pasos/revolución
-Resolución angular = 360° / 80,000 = 0.0045° por paso
+Resolución de salida = 1000 × 4 (cuadratura) × 20 = 800,000 pasos/revolución
+Resolución angular = 360° / 800,000 = 0.00045° por paso
 ```
 
 ## 🔐 Características de Protección
@@ -516,9 +516,8 @@ Resolución angular = 360° / 80,000 = 0.0045° por paso
    - No remover la tarjeta SD mientras el sistema está en operación
    - El sistema usa wear leveling (1440 slots rotativos, 1 por minuto del día) para extender vida útil
    - Verificar periódicamente que los archivos `pos_XXXX.txt` se están actualizando
-   - Con wear leveling implementado, la vida útil estimada es de **~394 años**
+   - Con wear leveling implementado, la vida útil estimada es de **~394 años teoricamente**, pero se recomienda monitorear el estado de la tarjeta cada año.
    - Hacer respaldo de los archivos de posición antes de mantenimientos mayores
-   - La tarjeta SD durará más que el sistema completo
 
 6. **Sistema de Iluminación:**
    - Verificar capacidad del relé de estado sólido según potencia del reflector LED
@@ -552,4 +551,4 @@ Cristian David Alvarez Cardona - Co-lider de proyecto y soporte técnico
 
 ---
 
-**Última actualización:** 2 de Febrero 2026
+**Última actualización:** 11 de Febrero 2026
