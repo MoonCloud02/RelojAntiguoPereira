@@ -49,7 +49,7 @@
 #define TOTAL_STEPS (STEPS_PER_HOUR * 12)  // Pasos totales en 12 horas (9,600,000 pasos)
 
 // Velocidad del motor
-#define PULSE_DELAY_US 1000         // Microsegundos entre pulsos (calibrado para 1 rev/hora)
+#define PULSE_DELAY_US 500         // Microsegundos entre pulsos
 #define SYNC_PULSE_DELAY_US 10     // Microsegundos para sincronización rápida
 #define MIN_PULSE_WIDTH_US 5        // Ancho mínimo del pulso
 
@@ -74,6 +74,10 @@ int currentSlot = 0;                // Slot actual para wear leveling (0-1439)
 
 // Variables para cálculo preciso de posición
 float accumulatedSteps = 0.0;       // Acumulador de pasos fraccionarios
+
+// Variables para monitoreo de minutos perdidos
+unsigned long minuteUpdateCount = 0;  // Contador de actualizaciones por minuto
+int lastProcessedMinute = -1;         // Último minuto procesado (para detectar saltos)
 
 // Declaraciones de funciones
 void moveSteps(long steps, bool useFastSpeed = false);
@@ -138,18 +142,87 @@ void setup() {
     if (lastSavedTimestamp > 0) {
       unsigned long currentTimestamp = now.unixtime();
       unsigned long elapsedSeconds = currentTimestamp - lastSavedTimestamp;
+      long elapsedMinutes = elapsedSeconds / 60;
       
-      // Si pasó mucho tiempo (más de 1 hora), advertir y resincronizar
-      if (elapsedSeconds > 3600) {
-        Serial.print(F("ADVERTENCIA: Pasaron "));
-        Serial.print(elapsedSeconds / 60);
-        Serial.println(F(" minutos desde el último guardado"));
-        Serial.println(F("Se recomienda verificar la sincronización"));
-        firstSync = true;  // Forzar resincronización completa
+      Serial.print(F("Tiempo transcurrido desde último guardado: "));
+      Serial.print(elapsedMinutes);
+      Serial.println(F(" minutos"));
+      
+      // Si pasó tiempo significativo (más de 2 minutos), compensar automáticamente
+      if (elapsedSeconds > 120) {
+        Serial.print(F("ADVERTENCIA: El timestamp indica "));
+        Serial.print(elapsedMinutes);
+        Serial.println(F(" minutos de diferencia"));
+        Serial.println(F(""));
+        Serial.println(F("OPCIONES:"));
+        Serial.println(F("  1. Si el reloj estuvo DETENIDO todo ese tiempo:"));
+        Serial.println(F("     Envíe 'SYNC' para sincronizar a la hora actual"));
+        Serial.println(F("  2. Si el reloj estuvo FUNCIONANDO (corte de luz):"));
+        Serial.println(F("     Envíe 'COMP' para compensar solo los minutos transcurridos"));
+        Serial.println(F("  3. Si la posición guardada es correcta:"));
+        Serial.println(F("     Envíe 'OK' para continuar sin cambios"));
+        Serial.println(F(""));
+        Serial.println(F("El sistema NO se moverá hasta que elija una opción."));
+        Serial.println(F("Si no responde en 60 segundos, continuará con opción OK"));
+        firstSync = false;  // NO sincronizar automáticamente
+        
+        // Esperar comando del usuario con timeout de 60 segundos
+        unsigned long waitStart = millis();
+        unsigned long timeout = 60000;  // 60 segundos
+        bool commandReceived = false;
+        
+        while (millis() - waitStart < timeout) {
+          if (Serial.available()) {
+            String cmd = Serial.readStringUntil('\n');
+            cmd.trim();
+            cmd.toUpperCase();
+            
+            if (cmd == "SYNC") {
+              firstSync = true;  // Sincronización completa
+              Serial.println(F("Sincronización completa seleccionada"));
+              commandReceived = true;
+              break;
+            } else if (cmd == "COMP") {
+              // Compensar solo los minutos transcurridos
+              Serial.print(F("Compensando "));
+              Serial.print(elapsedMinutes);
+              Serial.println(F(" minutos..."));
+              
+              long stepsToAdd = (long)(elapsedMinutes * STEPS_PER_MINUTE);
+              currentPosition += stepsToAdd;
+              
+              // Normalizar posición
+              currentPosition = currentPosition % TOTAL_STEPS;
+              if (currentPosition < 0) currentPosition += TOTAL_STEPS;
+              
+              Serial.print(F("Nueva posición: "));
+              Serial.print(currentPosition);
+              Serial.println(F(" pasos"));
+              
+              firstSync = false;
+              commandReceived = true;
+              break;
+            } else if (cmd == "OK") {
+              Serial.println(F("Continuando con posición actual"));
+              firstSync = false;
+              commandReceived = true;
+              break;
+            } else {
+              Serial.println(F("Comando no reconocido. Use: SYNC, COMP, o OK"));
+            }
+          }
+          delay(100);
+        }
+        
+        // Si no se recibió comando, continuar con OK (opción 3)
+        if (!commandReceived) {
+          Serial.println(F("\nTimeout: No se recibió comando en 60 segundos"));
+          Serial.println(F("Continuando con posición actual (opción OK)"));
+          firstSync = false;
+        }
       } else {
-        Serial.print(F("Tiempo transcurrido: "));
-        Serial.print(elapsedSeconds);
-        Serial.println(F(" segundos"));
+        Serial.println(F("Diferencia de tiempo aceptable, continuando normalmente"));
+        firstSync = false;
       }
     }
   } else {
@@ -162,10 +235,15 @@ void setup() {
   Serial.print(temp);
   Serial.println(F(" °C"));
   
+  // Habilitar motor permanentemente para mantener posición
+  enableMotor(true);
+  Serial.println(F("Motor habilitado permanentemente (holding torque)"));
+  
   Serial.println(F("\nSistema inicializado"));
   Serial.println(F("El reloj se sincronizará automáticamente cada minuto"));
   Serial.println(F("\nComandos disponibles:"));
   Serial.println(F("  SYNC       - Forzar sincronización inmediata"));
+  Serial.println(F("  COMP       - Compensar minutos desde último guardado"));
   Serial.println(F("  STATUS     - Mostrar estado actual"));
   Serial.println(F("  ENABLE     - Habilitar motor"));
   Serial.println(F("  DISABLE    - Deshabilitar motor"));
@@ -183,7 +261,20 @@ void loop() {
   
   // Verificar si cambió el minuto
   if (now.minute() != lastMinute) {
+    // Detectar minutos saltados
+    if (lastProcessedMinute != -1) {
+      int expectedMinute = (lastProcessedMinute + 1) % 60;
+      if (now.minute() != expectedMinute) {
+        int skipped = (now.minute() - expectedMinute + 60) % 60;
+        Serial.print(F("\nADVERTENCIA: Se saltaron "));
+        Serial.print(skipped);
+        Serial.println(F(" minuto(s)! Posible retraso en loop()"));
+      }
+    }
+    
     lastMinute = now.minute();
+    lastProcessedMinute = now.minute();
+    minuteUpdateCount++;
     
     if (firstSync) {
       // Primera sincronización: mover a la hora actual
@@ -202,7 +293,8 @@ void loop() {
       Serial.print(currentPosition);
       Serial.print(F(" pasos | Temp: "));
       Serial.print(rtc.getTemperature());
-      Serial.println(F(" °C"));
+      Serial.print(F(" °C | Updates: "));
+      Serial.println(minuteUpdateCount);
     }
   }
   
@@ -277,6 +369,9 @@ void moveOneMinute() {
     moveSteps(stepsToMove);
     
     // Guardar posición en SD cada minuto
+    Serial.print(F("[DEBUG] Guardando posición en slot "));
+    Serial.print(currentSlot);
+    Serial.print(F("..."));
     savePositionToSD();
   }
 }
@@ -293,8 +388,10 @@ void moveSteps(long steps, bool useFastSpeed = false) {
   bool forward = (steps > 0);
   digitalWrite(PIN_DIR, forward ? LOW : HIGH);
   
-  // Habilitar motor
-  enableMotor(true);
+  // Asegurar que motor está habilitado
+  if (!motorEnabled) {
+    enableMotor(true);
+  }
   
   // Seleccionar velocidad
   int pulseDelay = useFastSpeed ? SYNC_PULSE_DELAY_US : PULSE_DELAY_US;
@@ -328,9 +425,9 @@ void moveSteps(long steps, bool useFastSpeed = false) {
     }
   }
   
-  // Deshabilitar motor tras movimiento
-  delay(100);
-  enableMotor(false);
+  // NO deshabilitar motor - debe permanecer habilitado para holding torque
+  // Si se deshabilita, las manecillas pueden retroceder por su propio peso
+  delay(100);  // Pequeña pausa para estabilización
 }
 
 /*
@@ -357,6 +454,44 @@ void processCommand(String command, DateTime now) {
   if (command == "SYNC") {
     Serial.println(F("Forzando sincronización..."));
     performFullSync(now);
+    
+  } else if (command == "COMP") {
+    // Compensar minutos desde el último guardado
+    if (lastSavedTimestamp > 0) {
+      unsigned long currentTimestamp = now.unixtime();
+      unsigned long elapsedSeconds = currentTimestamp - lastSavedTimestamp;
+      long elapsedMinutes = elapsedSeconds / 60;
+      
+      Serial.print(F("Compensando "));
+      Serial.print(elapsedMinutes);
+      Serial.println(F(" minutos desde último guardado..."));
+      
+      long stepsToAdd = (long)(elapsedMinutes * STEPS_PER_MINUTE);
+      
+      Serial.print(F("Posición actual: "));
+      Serial.print(currentPosition);
+      Serial.print(F(" | Agregando: "));
+      Serial.print(stepsToAdd);
+      Serial.println(F(" pasos"));
+      
+      currentPosition += stepsToAdd;
+      
+      // Normalizar posición
+      currentPosition = currentPosition % TOTAL_STEPS;
+      if (currentPosition < 0) currentPosition += TOTAL_STEPS;
+      
+      Serial.print(F("Nueva posición: "));
+      Serial.print(currentPosition);
+      Serial.println(F(" pasos"));
+      
+      // Actualizar timestamp
+      lastSavedTimestamp = currentTimestamp;
+      savePositionToSD();
+      
+      Serial.println(F("Compensación completada"));
+    } else {
+      Serial.println(F("No hay timestamp de referencia para compensar"));
+    }
     
   } else if (command == "STATUS") {
     showStatus(now);
@@ -388,7 +523,7 @@ void processCommand(String command, DateTime now) {
   } else {
     Serial.print(F("Comando desconocido: "));
     Serial.println(command);
-    Serial.println(F("Comandos: SYNC, STATUS, ENABLE, DISABLE, RESET, LIGHT_ON, LIGHT_OFF"));
+    Serial.println(F("Comandos: SYNC, COMP, STATUS, ENABLE, DISABLE, RESET, LIGHT_ON, LIGHT_OFF"));
   }
 }
 
@@ -427,6 +562,9 @@ void showStatus(DateTime now) {
   
   Serial.print(F("Primera sincronización: "));
   Serial.println(firstSync ? F("PENDIENTE") : F("COMPLETADA"));
+  
+  Serial.print(F("Actualizaciones de minuto: "));
+  Serial.println(minuteUpdateCount);
   
   Serial.print(F("Último guardado: "));
   if (lastSavedTimestamp > 0) {
@@ -487,39 +625,102 @@ void savePositionToSD() {
   char filename[16];
   sprintf(filename, "%s%04d%s", POSITION_FILE_PREFIX, currentSlot, POSITION_FILE_EXT);
   
-  // Eliminar archivo del slot actual si existe
-  if (SD.exists(filename)) {
-    SD.remove(filename);
+  // Intentar hasta 3 veces en caso de fallo
+  bool success = false;
+  for (int attempt = 0; attempt < 3 && !success; attempt++) {
+    if (attempt > 0) {
+      Serial.print(F("Reintentando escritura SD (intento "));
+      Serial.print(attempt + 1);
+      Serial.println(F("/3)..."));
+      delay(100);
+    }
+    
+    // Verificar que la SD sigue disponible
+    if (!SD.begin(PIN_CS)) {
+      Serial.println(F("ERROR: SD no disponible. Reintentando inicialización..."));
+      delay(500);
+      continue;
+    }
+    
+    // Eliminar archivo del slot actual si existe
+    if (SD.exists(filename)) {
+      if (!SD.remove(filename)) {
+        Serial.print(F("ADVERTENCIA: No se pudo eliminar archivo existente: "));
+        Serial.println(filename);
+        // Continuar de todas formas, intentar sobrescribir
+      }
+    }
+    
+    // Crear y escribir archivo en el slot actual
+    File dataFile = SD.open(filename, FILE_WRITE);
+    
+    if (dataFile) {
+      // Guardar posición y timestamp separados por coma
+      size_t written = 0;
+      written += dataFile.print(currentPosition);
+      written += dataFile.print(",");
+      written += dataFile.println(timestamp);
+      
+      // Forzar escritura en disco
+      dataFile.flush();
+      dataFile.close();
+      
+      // Verificar que el archivo se escribió correctamente
+      if (written > 0 && SD.exists(filename)) {
+        // Verificar integridad leyendo el archivo
+        File verifyFile = SD.open(filename, FILE_READ);
+        if (verifyFile) {
+          String line = verifyFile.readStringUntil('\n');
+          verifyFile.close();
+          
+          int commaIndex = line.indexOf(',');
+          if (commaIndex > 0) {
+            long readPosition = line.substring(0, commaIndex).toInt();
+            unsigned long readTimestamp = line.substring(commaIndex + 1).toInt();
+            
+            if (readPosition == currentPosition && readTimestamp == timestamp) {
+              // Escritura y verificación exitosa
+              lastSavedTimestamp = timestamp;
+              currentSlot = (currentSlot + 1) % NUM_SLOTS;
+              success = true;
+              
+              // Mensaje de depuración cada 30 minutos o si hubo reintentos
+              if (lastMinute % 30 == 0 || attempt > 0) {
+                Serial.print(F("✓ Posición guardada en SD: "));
+                Serial.print(currentPosition);
+                Serial.print(F(" pasos @ "));
+                printTime(now);
+                Serial.print(F(" (slot "));
+                Serial.print((currentSlot - 1 + NUM_SLOTS) % NUM_SLOTS);
+                if (attempt > 0) {
+                  Serial.print(F(", intentos: "));
+                  Serial.print(attempt + 1);
+                }
+                Serial.println(F(")"));
+              }
+            } else {
+              Serial.println(F("ERROR: Verificación de datos fallida"));
+            }
+          } else {
+            Serial.println(F("ERROR: Formato de datos incorrecto"));
+          }
+        } else {
+          Serial.println(F("ERROR: No se pudo verificar archivo escrito"));
+        }
+      } else {
+        Serial.print(F("ERROR: Escritura fallida (bytes escritos: "));
+        Serial.print(written);
+        Serial.println(F(")"));
+      }
+    } else {
+      Serial.print(F("ERROR: No se pudo abrir archivo para escritura: "));
+      Serial.println(filename);
+    }
   }
   
-  // Crear y escribir archivo en el slot actual
-  File dataFile = SD.open(filename, FILE_WRITE);
-  
-  if (dataFile) {
-    // Guardar posición y timestamp separados por coma
-    dataFile.print(currentPosition);
-    dataFile.print(",");
-    dataFile.println(timestamp);
-    dataFile.close();
-    
-    // Actualizar timestamp en memoria
-    lastSavedTimestamp = timestamp;
-    
-    // Avanzar al siguiente slot (rotación circular 0-99)
-    currentSlot = (currentSlot + 1) % NUM_SLOTS;
-    
-    // Mensaje de depuración cada 30 minutos
-    if (lastMinute % 30 == 0) {
-      Serial.print(F("Posición guardada en SD: "));
-      Serial.print(currentPosition);
-      Serial.print(F(" pasos @ "));
-      printTime(now);
-      Serial.print(F(" (slot "));
-      Serial.print((currentSlot - 1 + NUM_SLOTS) % NUM_SLOTS); // Mostrar slot usado
-      Serial.println(F(")"));
-    }
-  } else {
-    Serial.println(F("ERROR: No se pudo escribir en la tarjeta SD"));
+  if (!success) {
+    Serial.println(F("ERROR CRÍTICO: No se pudo guardar posición en SD después de 3 intentos"));
+    Serial.println(F("ACCIÓN REQUERIDA: Verificar tarjeta SD y conexiones"));
   }
 }
 
@@ -684,3 +885,5 @@ void controlReflector(DateTime now) {
     Serial.println();
   }
 }
+
+// testSDCard() y showSDInfo() eliminados para reducir uso de flash
