@@ -24,7 +24,7 @@
  * - Actualización automática cada minuto
  * - Compensación de posición tras reinicio
  * - Almacenamiento persistente en tarjeta SD
- * - Control automático de iluminación (6pm-5am)
+ * - Control automático de iluminación (6pm-7am)
  * 
  * Autor: Miguel Angel Luna Garcia
  * Proyecto: Automatización Reloj Antiguo de Pereira
@@ -45,7 +45,7 @@
 
 // Constantes del motor
 #define STEPS_PER_HOUR 800000L      // Pasos que da el motor por hora (1 revolución completa)
-#define STEPS_PER_MINUTE (STEPS_PER_HOUR / 60)  // Pasos por minuto (13,333.33 pasos/min)
+#define STEPS_PER_MINUTE (STEPS_PER_HOUR / 60.0f)  // Pasos por minuto (13,333.33 pasos/min)
 #define TOTAL_STEPS (STEPS_PER_HOUR * 12)  // Pasos totales en 12 horas (9,600,000 pasos)
 
 // Velocidad del motor
@@ -79,7 +79,15 @@ float accumulatedSteps = 0.0;       // Acumulador de pasos fraccionarios
 unsigned long minuteUpdateCount = 0;  // Contador de actualizaciones por minuto
 int lastProcessedMinute = -1;         // Último minuto procesado (para detectar saltos)
 
+// Variables para movimiento no bloqueante
+#define STEPS_PER_BATCH 200           // Pasos procesados por iteración del loop
+long pendingSteps = 0;                // Pasos pendientes de ejecutar
+bool pendingFastSpeed = false;        // Velocidad del movimiento pendiente
+// pendingOnComplete: 0=nada, 1=guardar SD, 2=guardar SD + imprimir fin de sync
+uint8_t pendingOnComplete = 0;
+
 // Declaraciones de funciones
+void processPendingSteps();
 void moveSteps(long steps, bool useFastSpeed = false);
 void performFullSync(DateTime now);
 void moveOneMinute();
@@ -245,22 +253,23 @@ void setup() {
   Serial.println(F("  SYNC       - Forzar sincronización inmediata"));
   Serial.println(F("  COMP       - Compensar minutos desde último guardado"));
   Serial.println(F("  STATUS     - Mostrar estado actual"));
-  Serial.println(F("  ENABLE     - Habilitar motor"));
-  Serial.println(F("  DISABLE    - Deshabilitar motor"));
   Serial.println(F("  RESET      - Restablecer posición a 12:00"));
   Serial.println(F("  LIGHT_ON   - Encender reflector manualmente"));
   Serial.println(F("  LIGHT_OFF  - Apagar reflector manualmente"));
 }
 
 void loop() {
+  // Procesar lote de pasos pendientes (movimiento no bloqueante)
+  processPendingSteps();
+
   // Leer hora actual del RTC
   DateTime now = rtc.now();
-  
+
   // Controlar reflector LED según horario
   controlReflector(now);
-  
-  // Verificar si cambió el minuto
-  if (now.minute() != lastMinute) {
+
+  // Verificar si cambió el minuto (solo si no hay movimiento en curso)
+  if (now.minute() != lastMinute && pendingSteps == 0) {
     // Detectar minutos saltados
     if (lastProcessedMinute != -1) {
       int expectedMinute = (lastProcessedMinute + 1) % 60;
@@ -305,7 +314,8 @@ void loop() {
     processCommand(command, now);
   }
   
-  delay(500);  // Verificar cada medio segundo
+  // Solo pausar si no hay movimiento pendiente
+  if (pendingSteps == 0) delay(500);
 }
 
 /*
@@ -339,19 +349,22 @@ void performFullSync(DateTime now) {
     diff += TOTAL_STEPS;
   }
   
+  if (diff == 0) {
+    Serial.println(F("Posición ya correcta, no se requiere movimiento"));
+    savePositionToSD();
+    Serial.println(F("Sincronización completa finalizada\n"));
+    return;
+  }
+
   Serial.print(F("Moviendo "));
   Serial.print(abs(diff));
   Serial.print(F(" pasos "));
   Serial.println(diff > 0 ? F("hacia adelante") : F("hacia atrás"));
   Serial.println(F("Usando velocidad rápida para sincronización..."));
-  
-  // Realizar movimiento a velocidad rápida
+
+  // Programar movimiento a velocidad rápida (no bloqueante)
   moveSteps(diff, true);
-  
-  // Guardar posición en SD
-  savePositionToSD();
-  
-  Serial.println(F("Sincronización completa finalizada\n"));
+  pendingOnComplete = 2;  // Al terminar: guardar SD + imprimir mensaje
 }
 
 /*
@@ -367,67 +380,66 @@ void moveOneMinute() {
   
   if (stepsToMove > 0) {
     moveSteps(stepsToMove);
-    
-    // Guardar posición en SD cada minuto
+    pendingOnComplete = 1;  // Guardar en SD al completar el movimiento
     Serial.print(F("[DEBUG] Guardando posición en slot "));
     Serial.print(currentSlot);
     Serial.print(F("..."));
-    savePositionToSD();
   }
 }
 
 /*
- * Mover el motor N pasos
- * steps puede ser positivo (adelante) o negativo (atrás)
- * useFastSpeed: usar velocidad rápida para sincronización
+ * Procesar un lote de pasos pendientes (llamar en cada iteración del loop)
+ * Mueve STEPS_PER_BATCH pasos por llamada para no bloquear el loop.
+ * Al terminar ejecuta la acción indicada por pendingOnComplete.
  */
-void moveSteps(long steps, bool useFastSpeed = false) {
-  if (steps == 0) return;
-  
-  // Determinar dirección (invertida para sentido horario del reloj)
-  bool forward = (steps > 0);
+void processPendingSteps() {
+  if (pendingSteps == 0) return;
+
+  bool forward = (pendingSteps > 0);
   digitalWrite(PIN_DIR, forward ? LOW : HIGH);
-  
-  // Asegurar que motor está habilitado
-  if (!motorEnabled) {
-    enableMotor(true);
-  }
-  
-  // Seleccionar velocidad
-  int pulseDelay = useFastSpeed ? SYNC_PULSE_DELAY_US : PULSE_DELAY_US;
-  
-  // Realizar pasos
-  long absSteps = abs(steps);
-  for (long i = 0; i < absSteps; i++) {
-    // Generar pulso
+
+  if (!motorEnabled) enableMotor(true);
+
+  int pulseDelay = pendingFastSpeed ? SYNC_PULSE_DELAY_US : PULSE_DELAY_US;
+  long batch = min(abs(pendingSteps), (long)STEPS_PER_BATCH);
+
+  for (long i = 0; i < batch; i++) {
     digitalWrite(PIN_PUL, HIGH);
     delayMicroseconds(MIN_PULSE_WIDTH_US);
     digitalWrite(PIN_PUL, LOW);
     delayMicroseconds(pulseDelay);
-    
-    // Actualizar posición
-    if (forward) {
-      currentPosition++;
-    } else {
-      currentPosition--;
-    }
-    
-    // Mantener posición dentro del rango 0 - TOTAL_STEPS
-    if (currentPosition >= TOTAL_STEPS) {
-      currentPosition -= TOTAL_STEPS;
-    } else if (currentPosition < 0) {
-      currentPosition += TOTAL_STEPS;
-    }
-    
-    // Pequeña pausa cada 100 pasos para no saturar
-    if (i % 100 == 0 && i > 0) {
-      delay(10);
-    }
+
+    if (forward) currentPosition++;
+    else         currentPosition--;
+
+    if (currentPosition >= TOTAL_STEPS) currentPosition -= TOTAL_STEPS;
+    else if (currentPosition < 0)       currentPosition += TOTAL_STEPS;
   }
-  
-  // NO deshabilitar motor - debe permanecer habilitado para holding torque
-  // Si se deshabilita, las manecillas pueden retroceder por su propio peso
-  delay(100);  // Pequeña pausa para estabilización
+
+  pendingSteps -= forward ? batch : -batch;
+
+  // Movimiento completado
+  if (pendingSteps == 0) {
+    delay(100);  // Estabilización mecánica
+    if (pendingOnComplete >= 1) {
+      savePositionToSD();
+    }
+    if (pendingOnComplete == 2) {
+      Serial.println(F("Sincronización completa finalizada\n"));
+    }
+    pendingOnComplete = 0;
+  }
+}
+
+/*
+ * Programar movimiento de N pasos (no bloqueante)
+ * steps positivo = adelante, negativo = atrás
+ * useFastSpeed: velocidad rápida para sincronización
+ */
+void moveSteps(long steps, bool useFastSpeed) {
+  if (steps == 0) return;
+  pendingSteps = steps;
+  pendingFastSpeed = useFastSpeed;
 }
 
 /*
@@ -452,10 +464,18 @@ void processCommand(String command, DateTime now) {
   command.toUpperCase();
   
   if (command == "SYNC") {
+    if (pendingSteps != 0) {
+      Serial.println(F("Movimiento en curso, espere antes de sincronizar"));
+      return;
+    }
     Serial.println(F("Forzando sincronización..."));
     performFullSync(now);
-    
+
   } else if (command == "COMP") {
+    if (pendingSteps != 0) {
+      Serial.println(F("Movimiento en curso, espere antes de compensar"));
+      return;
+    }
     // Compensar minutos desde el último guardado
     if (lastSavedTimestamp > 0) {
       unsigned long currentTimestamp = now.unixtime();
@@ -496,19 +516,13 @@ void processCommand(String command, DateTime now) {
   } else if (command == "STATUS") {
     showStatus(now);
     
-  } else if (command == "ENABLE") {
-    enableMotor(true);
-    Serial.println(F("Motor habilitado"));
-    
-  } else if (command == "DISABLE") {
-    enableMotor(false);
-    Serial.println(F("Motor deshabilitado"));
-    
   } else if (command == "RESET") {
-    Serial.println(F("Restableciendo posición a 12:00..."));
+    pendingSteps = 0;
+    pendingOnComplete = 0;
     currentPosition = 0;
     accumulatedSteps = 0;
-    Serial.println(F("Posición restablecida. Use SYNC para sincronizar con el RTC"));
+    savePositionToSD();
+    Serial.println(F("Posición restablecida a 12:00. Use SYNC para sincronizar con el RTC"));
     
   } else if (command == "LIGHT_ON") {
     digitalWrite(PIN_RELAY, LOW);  // Low Level Trigger: LOW = ON
@@ -523,7 +537,7 @@ void processCommand(String command, DateTime now) {
   } else {
     Serial.print(F("Comando desconocido: "));
     Serial.println(command);
-    Serial.println(F("Comandos: SYNC, COMP, STATUS, ENABLE, DISABLE, RESET, LIGHT_ON, LIGHT_OFF"));
+    Serial.println(F("Comandos: SYNC, COMP, STATUS, RESET, LIGHT_ON, LIGHT_OFF"));
   }
 }
 
@@ -565,12 +579,14 @@ void showStatus(DateTime now) {
   
   Serial.print(F("Actualizaciones de minuto: "));
   Serial.println(minuteUpdateCount);
+
+  Serial.print(F("Pasos pendientes: "));
+  Serial.println(pendingSteps);
   
   Serial.print(F("Último guardado: "));
   if (lastSavedTimestamp > 0) {
     DateTime savedTime = DateTime(lastSavedTimestamp);
     printDateTime(savedTime);
-    Serial.println();
   } else {
     Serial.println(F("N/A"));
   }
@@ -824,6 +840,7 @@ void printDateTime(DateTime dt) {
   Serial.print(dt.day(), DEC);
   Serial.print(" ");
   printTime(dt);
+  Serial.println();
 }
 
 /*
@@ -842,7 +859,7 @@ void printTime(DateTime dt) {
 
 /*
  * Controlar el reflector LED según horario
- * Encendido: 6pm (18:00) - Apagado: 5am (05:00)
+ * Encendido: 6pm (18:00) - Apagado: 7am (07:00)
  * Nota: Relé Low Level Trigger - LOW=ON, HIGH=OFF
  */
 void controlReflector(DateTime now) {
@@ -850,7 +867,7 @@ void controlReflector(DateTime now) {
   bool shouldBeOn = false;
   
   // Determinar si el reflector debe estar encendido
-  // Encendido de 18:00 a 23:59 y de 00:00 a 04:59
+  // Encendido de 18:00 a 23:59 y de 00:00 a 06:59
   if (currentHour >= LIGHT_ON_HOUR || currentHour < LIGHT_OFF_HOUR) {
     shouldBeOn = true;
   }
