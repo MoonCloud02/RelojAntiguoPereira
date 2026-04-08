@@ -282,22 +282,24 @@ void loop() {
   // Verificar si cambió el minuto (solo si no hay movimiento en curso)
   if (now.minute() != lastMinute && pendingSteps == 0) {
     // Detectar minutos saltados
+    bool minutesSkipped = false;
     if (lastProcessedMinute != -1) {
       int expectedMinute = (lastProcessedMinute + 1) % 60;
       if (now.minute() != expectedMinute) {
         int skipped = (now.minute() - expectedMinute + 60) % 60;
         Serial.print(F("\nADVERTENCIA: Se saltaron "));
         Serial.print(skipped);
-        Serial.println(F(" minuto(s)! Posible retraso en loop()"));
+        Serial.println(F(" minuto(s) — resincronizando a hora actual"));
+        minutesSkipped = true;
       }
     }
-    
+
     lastMinute = now.minute();
     lastProcessedMinute = now.minute();
     minuteUpdateCount++;
-    
-    if (firstSync) {
-      // Primera sincronización: mover a la hora actual
+
+    if (firstSync || minutesSkipped) {
+      // Primera sync o minutos perdidos: corregir a la hora actual
       performFullSync(now);
       firstSync = false;
     } else {
