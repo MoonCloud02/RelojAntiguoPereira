@@ -35,6 +35,7 @@
 #include <RTClib.h>
 #include <SPI.h>
 #include <SD.h>
+#include <avr/wdt.h>
 
 // Definición de pines
 #define PIN_CS  4    // Chip Select para módulo SD
@@ -98,6 +99,8 @@ bool initializeSD();
 void controlReflector(DateTime now);
 
 void setup() {
+  wdt_disable();  // Apagar WDT durante inicialización (por si venimos de un reset del watchdog)
+
   // Configurar pines como salidas
   pinMode(PIN_PUL, OUTPUT);
   pinMode(PIN_DIR, OUTPUT);
@@ -127,7 +130,9 @@ void setup() {
   if (!rtc.begin()) {
     Serial.println(F("ERROR: No se encontró el RTC DS3231"));
     Serial.println(F("Verifique las conexiones I2C (SDA=A4, SCL=A5)"));
-    while (1) delay(1000);  // Detener ejecución
+    Serial.println(F("Reiniciando en 8 segundos..."));
+    wdt_enable(WDTO_8S);
+    while (1);  // Watchdog reinicia el sistema
   }
   
   Serial.println(F("RTC DS3231 detectado correctamente"));
@@ -180,6 +185,7 @@ void setup() {
         bool commandReceived = false;
         
         while (millis() - waitStart < timeout) {
+          wdt_reset();
           if (Serial.available()) {
             String cmd = Serial.readStringUntil('\n');
             cmd.trim();
@@ -247,6 +253,9 @@ void setup() {
   enableMotor(true);
   Serial.println(F("Motor habilitado permanentemente (holding torque)"));
   
+  // Activar watchdog: reinicio automático si el loop no responde en 8 segundos
+  wdt_enable(WDTO_8S);
+
   Serial.println(F("\nSistema inicializado"));
   Serial.println(F("El reloj se sincronizará automáticamente cada minuto"));
   Serial.println(F("\nComandos disponibles:"));
@@ -259,6 +268,8 @@ void setup() {
 }
 
 void loop() {
+  wdt_reset();  // Alimentar watchdog — si esto deja de ejecutarse, el sistema reinicia
+
   // Procesar lote de pasos pendientes (movimiento no bloqueante)
   processPendingSteps();
 
@@ -757,6 +768,7 @@ bool loadPositionFromSD() {
   Serial.println(F("Buscando última posición guardada..."));
   
   for (int slot = 0; slot < NUM_SLOTS; slot++) {
+    wdt_reset();  // El scan de 1440 slots puede superar 8s sin esto
     char filename[16];
     sprintf(filename, "%s%04d%s", POSITION_FILE_PREFIX, slot, POSITION_FILE_EXT);
     
