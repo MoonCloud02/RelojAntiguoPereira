@@ -133,13 +133,13 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 **Responsabilidades:**
 - Generación de señales PUL (pulsos) para control de pasos del motor
 - Control de dirección (DIR) del movimiento
-- Habilitación/deshabilitación (EN) del driver
+- Habilitación permanente del driver (EN activo siempre para holding torque 24/7)
 - Lectura continua del módulo RTC DS3231 para mantener la hora
 - Sincronización automática del reloj físico con la hora del RTC
 - Gestión de la lógica de movimiento del reloj
 - Detección y recuperación ante cortes de energía
 - Almacenamiento persistente de posición en tarjeta SD
-- Control automático de iluminación del reloj (6pm-5am)
+- Control automático de iluminación del reloj (6pm-7am)
 
 **Conexiones al Driver BH86:**
 - Pin 8 → PUL+ (señal de pulsos)
@@ -188,12 +188,12 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 - Interfaz I2C simple y confiable
 
 **Lógica de Funcionamiento:**
-1. El Arduino lee la hora del DS3231 cada segundo vía I2C
-2. Compara la hora del RTC con la posición física del reloj
-3. Calcula los pasos necesarios para mantener sincronización
-4. Mueve el motor los pasos necesarios por minuto (aproximadamente 13.333 pasos/minuto) para mantener el reloj actualizado
-5. En caso de corte de energía, el DS3231 mantiene la hora con su batería
-6. Al restaurarse la energía, el Arduino lee la hora correcta y sincroniza el reloj físico automáticamente
+1. El Arduino lee la hora del DS3231 cada 500ms vía I2C (continuo durante movimiento)
+2. Al detectar cambio de minuto, avanza el motor 13.333 pasos (con acumulador de fracción para precisión exacta)
+3. Si se detectan minutos saltados (ej. tras un movimiento largo), se fuerza resincronización a la hora actual
+4. En caso de corte de energía, el DS3231 mantiene la hora con su batería
+5. Al restaurarse la energía, el Arduino lee la hora correcta y sincroniza el reloj físico automáticamente
+6. Un watchdog timer de 8 segundos reinicia el sistema automáticamente si el loop deja de responder
 
 #### Módulo MicroSD Card Adapter
 **Función:** Almacenamiento persistente de la posición del motor
@@ -221,7 +221,7 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 4. Al iniciar el sistema, busca entre todos los slots el archivo más reciente por timestamp (~2 segundos)
 5. El siguiente slot a usar se calcula automáticamente como (slot_más_reciente + 1) % 1440
 6. La rotación entre 1440 slots distribuye óptimamente el desgaste
-7. Vida útil estimada: **~10 años** (1440 slots × 100,000 ciclos ÷ 1 escritura/día)
+7. Vida útil estimada: **~273 años** (100,000 ciclos por slot ÷ 1 escritura/día por slot)
 8. Sistema completamente automático y sin archivos índice adicionales
 9. Mensajes de diagnóstico cada 30 minutos en el monitor serial
 
@@ -235,7 +235,7 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 **Horario de Operación:**
 - **Encendido automático:** 6:00 PM (18:00)
 - **Apagado automático:** 7:00 AM (07:00)
-- **Control manual:** Comandos LIGHT_ON / LIGHT_OFF disponibles
+- **Control manual:** Comandos `LIGHT_ON` / `LIGHT_OFF` disponibles vía Serial
 
 **Características:**
 - Sincronizado con RTC DS3231 para precisión horaria
@@ -314,7 +314,7 @@ graph TB
     GBX -->|Salida 20:1| CLOCK[⏰ Reloj de Torre]
     
     RELAY -->|ON/OFF| LED
-    LED -->|6pm-5am| CLOCK
+    LED -->|6pm-7am| CLOCK
     
     RTC -.->|Mantiene Hora| ARD
     SD -.->|Guarda Posición| ARD
@@ -409,7 +409,7 @@ graph TB
    - Configurar sincronización automática del reloj físico
    - Implementar detección de arranque inicial
    - Configurar sistema de almacenamiento persistente en SD con wear leveling (1440 slots rotativos)
-   - Implementar control automático de iluminación (6pm-5am)
+   - Implementar control automático de iluminación (6pm-7am)
 
 ### 5. Calibración Inicial
 1. Insertar tarjeta MicroSD formateada en el módulo
@@ -423,11 +423,10 @@ graph TB
 8. Verificar que el reflector LED se enciende/apaga según horario configurado
 
 **Comandos Disponibles:**
-- `SYNC` - Sincronizar reloj con hora del RTC
-- `STATUS` - Mostrar estado completo del sistema
-- `ENABLE` - Habilitar motor
-- `DISABLE` - Deshabilitar motor
-- `RESET` - Restablecer posición a 12:00
+- `SYNC` - Forzar sincronización inmediata con hora del RTC
+- `COMP` - Compensar minutos transcurridos desde el último guardado en SD
+- `STATUS` - Mostrar estado completo del sistema (posición, hora, pasos pendientes, etc.)
+- `RESET` - Cancelar movimiento, restablecer posición a 12:00 y guardar en SD
 - `LIGHT_ON` - Encender reflector manualmente
 - `LIGHT_OFF` - Apagar reflector manualmente
 
@@ -468,6 +467,11 @@ Resolución angular = 360° / 800,000 = 0.00045° por paso
 - **Alarma integrada:** Señal ALM para detección de errores
 - **Lazo cerrado:** Corrección automática de pérdida de pasos
 - **Protección térmica:** Prevención de sobrecalentamiento
+- **Watchdog timer (8s):** Reinicio automático del Arduino si el loop deja de responder
+- **Holding torque 24/7:** Driver EN siempre activo — las manecillas no retroceden por peso
+- **Movimiento no bloqueante:** El sistema responde a comandos y controla el relé incluso durante sincronización larga
+- **Resincronización automática:** Si se detectan minutos saltados tras un movimiento largo, el sistema se corrige a la hora actual automáticamente
+- **Persistencia verificada en SD:** Cada escritura se verifica leyendo el archivo; 3 reintentos ante fallo
 
 ## 📊 Mantenimiento
 
@@ -516,7 +520,7 @@ Resolución angular = 360° / 800,000 = 0.00045° por paso
    - No remover la tarjeta SD mientras el sistema está en operación
    - El sistema usa wear leveling (1440 slots rotativos, 1 por minuto del día) para extender vida útil
    - Verificar periódicamente que los archivos `pos_XXXX.txt` se están actualizando
-   - Con wear leveling implementado, la vida útil estimada es de **~394 años teoricamente**, pero se recomienda monitorear el estado de la tarjeta cada año.
+   - Con wear leveling implementado, la vida útil estimada es de **~273 años** (100,000 ciclos por slot ÷ 1 escritura/día), pero se recomienda monitorear el estado de la tarjeta cada año.
    - Hacer respaldo de los archivos de posición antes de mantenimientos mayores
 
 6. **Sistema de Iluminación:**
@@ -551,4 +555,4 @@ Cristian David Alvarez Cardona - Co-lider de proyecto y soporte técnico
 
 ---
 
-**Última actualización:** 11 de Febrero 2026
+**Última actualización:** 8 de Abril 2026
