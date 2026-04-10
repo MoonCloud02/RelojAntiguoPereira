@@ -190,7 +190,7 @@ Margen de seguridad = 300W / 215W ≈ 1.4× (adecuado)
 **Lógica de Funcionamiento:**
 1. El Arduino lee la hora del DS3231 cada 500ms vía I2C (continuo durante movimiento)
 2. Al detectar cambio de minuto, avanza el motor 13.333 pasos (con acumulador de fracción para precisión exacta)
-3. Si se detectan minutos saltados (ej. tras un movimiento largo), se fuerza resincronización a la hora actual
+3. Si se detectan minutos saltados (comparando timestamps Unix completos, cubre saltos entre horas), se fuerza resincronización a la hora actual
 4. En caso de corte de energía, el DS3231 mantiene la hora con su batería
 5. Al restaurarse la energía, el Arduino lee la hora correcta y sincroniza el reloj físico automáticamente
 6. Un watchdog timer de 8 segundos reinicia el sistema automáticamente si el loop deja de responder
@@ -467,11 +467,12 @@ Resolución angular = 360° / 800,000 = 0.00045° por paso
 - **Alarma integrada:** Señal ALM para detección de errores
 - **Lazo cerrado:** Corrección automática de pérdida de pasos
 - **Protección térmica:** Prevención de sobrecalentamiento
-- **Watchdog timer (8s):** Reinicio automático del Arduino si el loop deja de responder
+- **Watchdog timer (8s):** Reinicio automático del Arduino si el loop deja de responder; el WDT se alimenta dentro de las operaciones de SD para evitar reinicios espurios
 - **Holding torque 24/7:** Driver EN siempre activo — las manecillas no retroceden por peso
 - **Movimiento no bloqueante:** El sistema responde a comandos y controla el relé incluso durante sincronización larga
-- **Resincronización automática:** Si se detectan minutos saltados tras un movimiento largo, el sistema se corrige a la hora actual automáticamente
-- **Persistencia verificada en SD:** Cada escritura se verifica leyendo el archivo; 3 reintentos ante fallo
+- **Resincronización automática:** Detección de minutos saltados por comparación de timestamps Unix completos (cubre saltos entre horas); el sistema se corrige a la hora actual automáticamente
+- **Persistencia verificada en SD:** Cada escritura se verifica leyendo el archivo; 3 reintentos ante fallo; la tarjeta SD solo se reinicializa cuando se detecta un error real (no en cada escritura)
+- **Sin fragmentación de heap:** Toda la comunicación Serial y SD usa buffers `char[]` estáticos — no hay objetos `String` dinámicos en el path de operación continua
 
 ## 📊 Mantenimiento
 
