@@ -174,92 +174,93 @@ void setup() {
     // Verificar coherencia con RTC
     if (lastSavedTimestamp > 0) {
       unsigned long currentTimestamp = now.unixtime();
-      unsigned long elapsedSeconds = currentTimestamp - lastSavedTimestamp;
-      long elapsedMinutes = elapsedSeconds / 60;
-      
-      Serial.print(F("Tiempo transcurrido desde último guardado: "));
-      Serial.print(elapsedMinutes);
-      Serial.println(F(" minutos"));
-      
-      // Si pasó tiempo significativo (más de 2 minutos), compensar automáticamente
-      if (elapsedSeconds > 120) {
-        Serial.print(F("ADVERTENCIA: El timestamp indica "));
-        Serial.print(elapsedMinutes);
-        Serial.println(F(" minutos de diferencia"));
-        Serial.println(F(""));
-        Serial.println(F("OPCIONES:"));
-        Serial.println(F("  1. Si el reloj estuvo DETENIDO todo ese tiempo:"));
-        Serial.println(F("     Envíe 'SYNC' para sincronizar a la hora actual"));
-        Serial.println(F("  2. Si el reloj estuvo FUNCIONANDO (corte de luz):"));
-        Serial.println(F("     Envíe 'COMP' para compensar solo los minutos transcurridos"));
-        Serial.println(F("  3. Si la posición guardada es correcta:"));
-        Serial.println(F("     Envíe 'OK' para continuar sin cambios"));
-        Serial.println(F(""));
-        Serial.println(F("El sistema NO se moverá hasta que elija una opción."));
-        Serial.println(F("Si no responde en 60 segundos, continuará con opción OK"));
-        firstSync = false;  // NO sincronizar automáticamente
-        
-        // Esperar comando del usuario con timeout de 60 segundos
-        unsigned long waitStart = millis();
-        unsigned long timeout = 60000;  // 60 segundos
-        bool commandReceived = false;
-        
-        while (millis() - waitStart < timeout) {
-          wdt_reset();
-          if (Serial.available()) {
-            char cmd[16];
-            int cmdLen = Serial.readBytesUntil('\n', cmd, sizeof(cmd) - 1);
-            if (cmdLen > 0 && cmd[cmdLen - 1] == '\r') cmdLen--;
-            cmd[cmdLen] = '\0';
-            strToUpper(cmd);
-
-            if (strcmp(cmd, "SYNC") == 0) {
-              firstSync = true;  // Sincronización completa
-              Serial.println(F("Sincronización completa seleccionada"));
-              commandReceived = true;
-              break;
-            } else if (strcmp(cmd, "COMP") == 0) {
-              // Compensar solo los minutos transcurridos
-              Serial.print(F("Compensando "));
-              Serial.print(elapsedMinutes);
-              Serial.println(F(" minutos..."));
-              
-              long stepsToAdd = (long)(elapsedMinutes * STEPS_PER_MINUTE);
-              currentPosition += stepsToAdd;
-              
-              // Normalizar posición
-              currentPosition = currentPosition % TOTAL_STEPS;
-              if (currentPosition < 0) currentPosition += TOTAL_STEPS;
-              
-              Serial.print(F("Nueva posición: "));
-              Serial.print(currentPosition);
-              Serial.println(F(" pasos"));
-              
-              firstSync = false;
-              commandReceived = true;
-              break;
-            } else if (strcmp(cmd, "OK") == 0) {
-              Serial.println(F("Continuando con posición actual"));
-              firstSync = false;
-              commandReceived = true;
-              break;
-            } else {
-              Serial.println(F("Comando no reconocido. Use: SYNC, COMP, o OK"));
-            }
-          }
-          delay(100);
-        }
-        
-        // Si no se recibió comando, continuar con OK (opción 3)
-        if (!commandReceived) {
-          Serial.println(F("\nTimeout: No se recibió comando en 60 segundos"));
-          Serial.println(F("Continuando con posición actual (opción OK)"));
-          firstSync = false;
-        }
-      } else {
-        Serial.println(F("Diferencia de tiempo aceptable, continuando normalmente"));
+      if (currentTimestamp < lastSavedTimestamp) {
+        // El RTC fue reiniciado a una fecha anterior al último guardado — evitar underflow
+        Serial.println(F("ADVERTENCIA: Hora del RTC anterior al último guardado en SD"));
+        Serial.println(F("Verifique la hora del RTC. Continuando sin compensación."));
         firstSync = false;
-      }
+      } else {
+        unsigned long elapsedSeconds = currentTimestamp - lastSavedTimestamp;
+        long elapsedMinutes = elapsedSeconds / 60;
+
+        Serial.print(F("Tiempo transcurrido desde último guardado: "));
+        Serial.print(elapsedMinutes);
+        Serial.println(F(" minutos"));
+
+          // Si pasó tiempo significativo (más de 2 minutos), compensar automáticamente
+          if (elapsedSeconds > 120) {
+            Serial.print(F("ADVERTENCIA: El timestamp indica "));
+            Serial.print(elapsedMinutes);
+            Serial.println(F(" minutos de diferencia"));
+            Serial.println(F(""));
+            Serial.println(F("OPCIONES:"));
+            Serial.println(F("  1. Si el reloj estuvo DETENIDO todo ese tiempo:"));
+            Serial.println(F("     Envíe 'SYNC' para sincronizar a la hora actual"));
+            Serial.println(F("  2. Si el reloj estuvo FUNCIONANDO (corte de luz):"));
+            Serial.println(F("     Envíe 'COMP' para compensar solo los minutos transcurridos"));
+            Serial.println(F("  3. Si la posición guardada es correcta:"));
+            Serial.println(F("     Envíe 'OK' para continuar sin cambios"));
+            Serial.println(F(""));
+            Serial.println(F("El sistema NO se moverá hasta que elija una opción."));
+            Serial.println(F("Si no responde en 60 segundos, continuará con opción OK"));
+            firstSync = false;  // NO sincronizar automáticamente
+
+            // Esperar comando del usuario con timeout de 60 segundos
+            unsigned long waitStart = millis();
+            unsigned long timeout = 60000;  // 60 segundos
+            bool commandReceived = false;
+
+            while (millis() - waitStart < timeout) {
+              wdt_reset();
+              if (Serial.available()) {
+                char cmd[16];
+                int cmdLen = Serial.readBytesUntil('\n', cmd, sizeof(cmd) - 1);
+                if (cmdLen > 0 && cmd[cmdLen - 1] == '\r') cmdLen--;
+                cmd[cmdLen] = '\0';
+                strToUpper(cmd);
+
+                if (strcmp(cmd, "SYNC") == 0) {
+                  firstSync = true;
+                  Serial.println(F("Sincronización completa seleccionada"));
+                  commandReceived = true;
+                  break;
+                } else if (strcmp(cmd, "COMP") == 0) {
+                  Serial.print(F("Compensando "));
+                  Serial.print(elapsedMinutes);
+                  Serial.println(F(" minutos..."));
+                  long stepsToAdd = (long)(elapsedMinutes * STEPS_PER_MINUTE);
+                  currentPosition += stepsToAdd;
+                  currentPosition = currentPosition % TOTAL_STEPS;
+                  if (currentPosition < 0) currentPosition += TOTAL_STEPS;
+                  Serial.print(F("Nueva posición: "));
+                  Serial.print(currentPosition);
+                  Serial.println(F(" pasos"));
+                  firstSync = false;
+                  commandReceived = true;
+                  break;
+                } else if (strcmp(cmd, "OK") == 0) {
+                  Serial.println(F("Continuando con posición actual"));
+                  firstSync = false;
+                  commandReceived = true;
+                  break;
+                } else {
+                  Serial.println(F("Comando no reconocido. Use: SYNC, COMP, o OK"));
+                }
+              }
+              delay(100);
+            }
+
+            // Si no se recibió comando, continuar con OK (opción 3)
+            if (!commandReceived) {
+              Serial.println(F("\nTimeout: No se recibió comando en 60 segundos"));
+              Serial.println(F("Continuando con posición actual (opción OK)"));
+              firstSync = false;
+            }
+          } else {
+            Serial.println(F("Diferencia de tiempo aceptable, continuando normalmente"));
+            firstSync = false;
+          }
+        }  // else: currentTimestamp >= lastSavedTimestamp
     }
   } else {
     Serial.println(F("No hay posición guardada, iniciando desde 0"));
@@ -422,9 +423,6 @@ void moveOneMinute() {
   if (stepsToMove > 0) {
     moveSteps(stepsToMove);
     pendingOnComplete = 1;  // Guardar en SD al completar el movimiento
-    Serial.print(F("[DEBUG] Guardando posición en slot "));
-    Serial.print(currentSlot);
-    Serial.print(F("..."));
   }
 }
 
@@ -870,11 +868,11 @@ bool loadPositionFromSD() {
 void stepsToTime(long steps, int &hours, int &minutes) {
   long normalizedSteps = steps % TOTAL_STEPS;
   if (normalizedSteps < 0) normalizedSteps += TOTAL_STEPS;
-  
-  float totalMinutes = normalizedSteps / STEPS_PER_MINUTE;
+
+  long totalMinutes = (long)(normalizedSteps / STEPS_PER_MINUTE + 0.5f);  // Redondear
   hours = (int)(totalMinutes / 60);
-  minutes = (int)totalMinutes % 60;
-  
+  minutes = (int)(totalMinutes % 60);
+
   if (hours == 0) hours = 12;
 }
 
