@@ -194,12 +194,8 @@ void setup() {
             Serial.println(F(" minutos de diferencia"));
             Serial.println(F(""));
             Serial.println(F("OPCIONES:"));
-            Serial.println(F("  1. Si el reloj estuvo DETENIDO todo ese tiempo:"));
-            Serial.println(F("     Envíe 'SYNC' para sincronizar a la hora actual"));
-            Serial.println(F("  2. Si el reloj estuvo FUNCIONANDO (corte de luz):"));
-            Serial.println(F("     Envíe 'COMP' para compensar solo los minutos transcurridos"));
-            Serial.println(F("  3. Si la posición guardada es correcta:"));
-            Serial.println(F("     Envíe 'OK' para continuar sin cambios"));
+            Serial.println(F("  SYNC - Mover manecillas a la hora actual del RTC"));
+            Serial.println(F("  OK   - Conservar posicion actual sin cambios"));
             Serial.println(F(""));
             Serial.println(F("El sistema NO se moverá hasta que elija una opción."));
             Serial.println(F("Si no responde en 60 segundos, continuará con opción OK"));
@@ -221,22 +217,7 @@ void setup() {
 
                 if (strcmp(cmd, "SYNC") == 0) {
                   firstSync = true;
-                  Serial.println(F("Sincronización completa seleccionada"));
-                  commandReceived = true;
-                  break;
-                } else if (strcmp(cmd, "COMP") == 0) {
-                  Serial.print(F("Compensando "));
-                  Serial.print(elapsedMinutes);
-                  Serial.println(F(" minutos..."));
-                  long stepsToAdd = (long)(elapsedMinutes * STEPS_PER_MINUTE);
-                  currentPosition += stepsToAdd;
-                  currentPosition = currentPosition % TOTAL_STEPS;
-                  if (currentPosition < 0) currentPosition += TOTAL_STEPS;
-                  Serial.print(F("Nueva posición: "));
-                  Serial.print(currentPosition);
-                  Serial.println(F(" pasos"));
-                  savePositionToSD();  // Persistir compensación ante posible corte de luz
-                  firstSync = false;
+                  Serial.println(F("Sincronizando a hora actual..."));
                   commandReceived = true;
                   break;
                 } else if (strcmp(cmd, "OK") == 0) {
@@ -245,7 +226,7 @@ void setup() {
                   commandReceived = true;
                   break;
                 } else {
-                  Serial.println(F("Comando no reconocido. Use: SYNC, COMP, o OK"));
+                  Serial.println(F("Comando no reconocido. Use: SYNC u OK"));
                 }
               }
               delay(100);
@@ -283,9 +264,8 @@ void setup() {
   Serial.println(F("\nSistema inicializado"));
   Serial.println(F("El reloj se sincronizará automáticamente cada minuto"));
   Serial.println(F("\nComandos disponibles:"));
-  Serial.println(F("  SYNC       - Forzar sincronización inmediata"));
-  Serial.println(F("  COMP       - Compensar minutos desde último guardado"));
-  Serial.println(F("  STATUS     - Mostrar estado actual"));
+  Serial.println(F("  SYNC       - Forzar sincronización inmediata con el RTC"));
+  Serial.println(F("  STATUS     - Mostrar estado actual del sistema"));
   Serial.println(F("  RESET      - Restablecer posición a 12:00"));
   Serial.println(F("  LIGHT_ON   - Encender reflector manualmente"));
   Serial.println(F("  LIGHT_OFF  - Apagar reflector manualmente"));
@@ -509,48 +489,6 @@ void processCommand(const char* command, DateTime now) {
     Serial.println(F("Forzando sincronización..."));
     performFullSync(now);
 
-  } else if (strcmp(command, "COMP") == 0) {
-    if (pendingSteps != 0) {
-      Serial.println(F("Movimiento en curso, espere antes de compensar"));
-      return;
-    }
-    // Compensar minutos desde el último guardado
-    if (lastSavedTimestamp > 0) {
-      unsigned long currentTimestamp = now.unixtime();
-      unsigned long elapsedSeconds = currentTimestamp - lastSavedTimestamp;
-      long elapsedMinutes = elapsedSeconds / 60;
-      
-      Serial.print(F("Compensando "));
-      Serial.print(elapsedMinutes);
-      Serial.println(F(" minutos desde último guardado..."));
-      
-      long stepsToAdd = (long)(elapsedMinutes * STEPS_PER_MINUTE);
-      
-      Serial.print(F("Posición actual: "));
-      Serial.print(currentPosition);
-      Serial.print(F(" | Agregando: "));
-      Serial.print(stepsToAdd);
-      Serial.println(F(" pasos"));
-      
-      currentPosition += stepsToAdd;
-      
-      // Normalizar posición
-      currentPosition = currentPosition % TOTAL_STEPS;
-      if (currentPosition < 0) currentPosition += TOTAL_STEPS;
-      
-      Serial.print(F("Nueva posición: "));
-      Serial.print(currentPosition);
-      Serial.println(F(" pasos"));
-      
-      // Actualizar timestamp
-      lastSavedTimestamp = currentTimestamp;
-      savePositionToSD();
-      
-      Serial.println(F("Compensación completada"));
-    } else {
-      Serial.println(F("No hay timestamp de referencia para compensar"));
-    }
-    
   } else if (strcmp(command, "STATUS") == 0) {
     showStatus(now);
     
@@ -575,7 +513,7 @@ void processCommand(const char* command, DateTime now) {
   } else {
     Serial.print(F("Comando desconocido: "));
     Serial.println(command);  // const char* — funciona directo con println
-    Serial.println(F("Comandos: SYNC, COMP, STATUS, RESET, LIGHT_ON, LIGHT_OFF"));
+    Serial.println(F("Comandos: SYNC, STATUS, RESET, LIGHT_ON, LIGHT_OFF"));
   }
 }
 
