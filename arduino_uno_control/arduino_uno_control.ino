@@ -235,6 +235,7 @@ void setup() {
                   Serial.print(F("Nueva posición: "));
                   Serial.print(currentPosition);
                   Serial.println(F(" pasos"));
+                  savePositionToSD();  // Persistir compensación ante posible corte de luz
                   firstSync = false;
                   commandReceived = true;
                   break;
