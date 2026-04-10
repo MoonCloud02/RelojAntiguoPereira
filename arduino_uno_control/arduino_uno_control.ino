@@ -72,13 +72,14 @@ bool motorEnabled = false;          // Estado del motor
 bool relayState = false;            // Estado del relé del reflector
 unsigned long lastSavedTimestamp = 0; // Timestamp de la última posición guardada
 int currentSlot = 0;                // Slot actual para wear leveling (0-1439)
+bool sdAvailable = false;           // Estado de la tarjeta SD
 
 // Variables para cálculo preciso de posición
 float accumulatedSteps = 0.0;       // Acumulador de pasos fraccionarios
 
 // Variables para monitoreo de minutos perdidos
-unsigned long minuteUpdateCount = 0;  // Contador de actualizaciones por minuto
-int lastProcessedMinute = -1;         // Último minuto procesado (para detectar saltos)
+unsigned long minuteUpdateCount = 0;    // Contador de actualizaciones por minuto
+unsigned long lastProcessedTimestamp = 0; // Timestamp del último minuto procesado (para detectar saltos entre horas)
 
 // Variables para movimiento no bloqueante
 #define STEPS_PER_BATCH 200           // Pasos procesados por iteración del loop
@@ -97,6 +98,25 @@ void savePositionToSD();
 bool loadPositionFromSD();
 bool initializeSD();
 void controlReflector(DateTime now);
+void processCommand(const char* command, DateTime now);
+
+// Convierte un buffer char[] a mayúsculas in-place (reemplaza String::toUpperCase)
+static void strToUpper(char* s) {
+  while (*s) { if (*s >= 'a' && *s <= 'z') *s -= 32; s++; }
+}
+
+// Lee una línea del archivo SD en un buffer char[] (reemplaza String readStringUntil)
+// Retorna el número de bytes leídos (sin el '\n')
+static int readLineFromFile(File &f, char* buf, int maxLen) {
+  int i = 0;
+  while (i < maxLen - 1 && f.available()) {
+    char c = f.read();
+    if (c == '\n' || c == '\r') break;
+    buf[i++] = c;
+  }
+  buf[i] = '\0';
+  return i;
+}
 
 void setup() {
   wdt_disable();  // Apagar WDT durante inicialización (por si venimos de un reset del watchdog)
@@ -187,16 +207,18 @@ void setup() {
         while (millis() - waitStart < timeout) {
           wdt_reset();
           if (Serial.available()) {
-            String cmd = Serial.readStringUntil('\n');
-            cmd.trim();
-            cmd.toUpperCase();
-            
-            if (cmd == "SYNC") {
+            char cmd[16];
+            int cmdLen = Serial.readBytesUntil('\n', cmd, sizeof(cmd) - 1);
+            if (cmdLen > 0 && cmd[cmdLen - 1] == '\r') cmdLen--;
+            cmd[cmdLen] = '\0';
+            strToUpper(cmd);
+
+            if (strcmp(cmd, "SYNC") == 0) {
               firstSync = true;  // Sincronización completa
               Serial.println(F("Sincronización completa seleccionada"));
               commandReceived = true;
               break;
-            } else if (cmd == "COMP") {
+            } else if (strcmp(cmd, "COMP") == 0) {
               // Compensar solo los minutos transcurridos
               Serial.print(F("Compensando "));
               Serial.print(elapsedMinutes);
@@ -216,7 +238,7 @@ void setup() {
               firstSync = false;
               commandReceived = true;
               break;
-            } else if (cmd == "OK") {
+            } else if (strcmp(cmd, "OK") == 0) {
               Serial.println(F("Continuando con posición actual"));
               firstSync = false;
               commandReceived = true;
@@ -281,12 +303,14 @@ void loop() {
 
   // Verificar si cambió el minuto (solo si no hay movimiento en curso)
   if (now.minute() != lastMinute && pendingSteps == 0) {
-    // Detectar minutos saltados
+    // Detectar minutos saltados comparando timestamps completos (cubre saltos entre horas)
     bool minutesSkipped = false;
-    if (lastProcessedMinute != -1) {
-      int expectedMinute = (lastProcessedMinute + 1) % 60;
-      if (now.minute() != expectedMinute) {
-        int skipped = (now.minute() - expectedMinute + 60) % 60;
+    if (lastProcessedTimestamp != 0) {
+      unsigned long currentTs = now.unixtime();
+      // Se espera exactamente 60 segundos entre actualizaciones (±30s de tolerancia)
+      long elapsed = (long)(currentTs - lastProcessedTimestamp);
+      if (elapsed > 90) {  // Más de 1.5 minutos = se saltó al menos un minuto
+        long skipped = (elapsed / 60) - 1;  // Minutos saltados (el actual no cuenta)
         Serial.print(F("\nADVERTENCIA: Se saltaron "));
         Serial.print(skipped);
         Serial.println(F(" minuto(s) — resincronizando a hora actual"));
@@ -295,7 +319,7 @@ void loop() {
     }
 
     lastMinute = now.minute();
-    lastProcessedMinute = now.minute();
+    lastProcessedTimestamp = now.unixtime();
     minuteUpdateCount++;
 
     if (firstSync || minutesSkipped) {
@@ -320,10 +344,14 @@ void loop() {
     }
   }
   
-  // Procesar comandos desde Serial
+  // Procesar comandos desde Serial (char[] estático — sin heap dinámico)
   if (Serial.available()) {
-    String command = Serial.readStringUntil('\n');
-    command.trim();
+    char command[16];
+    int len = Serial.readBytesUntil('\n', command, sizeof(command) - 1);
+    // Quitar \r si el terminal envía CRLF
+    if (len > 0 && command[len - 1] == '\r') len--;
+    command[len] = '\0';
+    strToUpper(command);
     processCommand(command, now);
   }
   
@@ -467,16 +495,14 @@ long calculateStepsForTime(int hours, int minutes) {
   if (totalMinutes < 0) totalMinutes += 12 * 60;
   
   float steps = totalMinutes * STEPS_PER_MINUTE;
-  return (long)steps;
+  return (long)(steps + 0.5f);  // Redondear en lugar de truncar
 }
 
 /*
  * Procesar comandos desde Serial
  */
-void processCommand(String command, DateTime now) {
-  command.toUpperCase();
-  
-  if (command == "SYNC") {
+void processCommand(const char* command, DateTime now) {
+  if (strcmp(command, "SYNC") == 0) {
     if (pendingSteps != 0) {
       Serial.println(F("Movimiento en curso, espere antes de sincronizar"));
       return;
@@ -484,7 +510,7 @@ void processCommand(String command, DateTime now) {
     Serial.println(F("Forzando sincronización..."));
     performFullSync(now);
 
-  } else if (command == "COMP") {
+  } else if (strcmp(command, "COMP") == 0) {
     if (pendingSteps != 0) {
       Serial.println(F("Movimiento en curso, espere antes de compensar"));
       return;
@@ -526,10 +552,10 @@ void processCommand(String command, DateTime now) {
       Serial.println(F("No hay timestamp de referencia para compensar"));
     }
     
-  } else if (command == "STATUS") {
+  } else if (strcmp(command, "STATUS") == 0) {
     showStatus(now);
     
-  } else if (command == "RESET") {
+  } else if (strcmp(command, "RESET") == 0) {
     pendingSteps = 0;
     pendingOnComplete = 0;
     currentPosition = 0;
@@ -537,19 +563,19 @@ void processCommand(String command, DateTime now) {
     savePositionToSD();
     Serial.println(F("Posición restablecida a 12:00. Use SYNC para sincronizar con el RTC"));
     
-  } else if (command == "LIGHT_ON") {
+  } else if (strcmp(command, "LIGHT_ON") == 0) {
     digitalWrite(PIN_RELAY, LOW);  // Low Level Trigger: LOW = ON
     relayState = true;
     Serial.println(F("Reflector encendido manualmente"));
     
-  } else if (command == "LIGHT_OFF") {
+  } else if (strcmp(command, "LIGHT_OFF") == 0) {
     digitalWrite(PIN_RELAY, HIGH);  // Low Level Trigger: HIGH = OFF
     relayState = false;
     Serial.println(F("Reflector apagado manualmente"));
     
   } else {
     Serial.print(F("Comando desconocido: "));
-    Serial.println(command);
+    Serial.println(command);  // const char* — funciona directo con println
     Serial.println(F("Comandos: SYNC, COMP, STATUS, RESET, LIGHT_ON, LIGHT_OFF"));
   }
 }
@@ -629,14 +655,16 @@ bool initializeSD() {
   
   if (!SD.begin(PIN_CS)) {
     Serial.println(F(" FALLO"));
+    sdAvailable = false;
     return false;
   }
-  
+
   Serial.println(F(" OK"));
-  
+  sdAvailable = true;
+
   // Sistema de wear leveling con 1440 slots (1 por minuto del día)
   Serial.println(F("Sistema de wear leveling inicializado (1440 slots)"));
-  
+
   return true;
 }
 
@@ -657,6 +685,7 @@ void savePositionToSD() {
   // Intentar hasta 3 veces en caso de fallo
   bool success = false;
   for (int attempt = 0; attempt < 3 && !success; attempt++) {
+    wdt_reset();  // Alimentar WDT — las operaciones SD pueden tomar varios segundos
     if (attempt > 0) {
       Serial.print(F("Reintentando escritura SD (intento "));
       Serial.print(attempt + 1);
@@ -664,11 +693,13 @@ void savePositionToSD() {
       delay(100);
     }
     
-    // Verificar que la SD sigue disponible
-    if (!SD.begin(PIN_CS)) {
+    // Reinicializar SD solo si un intento previo falló (no en el primer intento)
+    if (!sdAvailable) {
       Serial.println(F("ERROR: SD no disponible. Reintentando inicialización..."));
       delay(500);
-      continue;
+      wdt_reset();
+      if (!SD.begin(PIN_CS)) continue;  // Sigue sin SD — intentar de nuevo
+      sdAvailable = true;
     }
     
     // Eliminar archivo del slot actual si existe
@@ -699,13 +730,15 @@ void savePositionToSD() {
         // Verificar integridad leyendo el archivo
         File verifyFile = SD.open(filename, FILE_READ);
         if (verifyFile) {
-          String line = verifyFile.readStringUntil('\n');
+          char buf[32];
+          readLineFromFile(verifyFile, buf, sizeof(buf));
           verifyFile.close();
-          
-          int commaIndex = line.indexOf(',');
-          if (commaIndex > 0) {
-            long readPosition = line.substring(0, commaIndex).toInt();
-            unsigned long readTimestamp = line.substring(commaIndex + 1).toInt();
+
+          char* comma = strchr(buf, ',');
+          if (comma != NULL) {
+            *comma = '\0';
+            long readPosition = atol(buf);
+            unsigned long readTimestamp = strtoul(comma + 1, NULL, 10);
             
             if (readPosition == currentPosition && readTimestamp == timestamp) {
               // Escritura y verificación exitosa
@@ -744,10 +777,12 @@ void savePositionToSD() {
     } else {
       Serial.print(F("ERROR: No se pudo abrir archivo para escritura: "));
       Serial.println(filename);
+      sdAvailable = false;  // Forzar reinicialización en el próximo intento
     }
   }
-  
+
   if (!success) {
+    sdAvailable = false;  // SD en estado incierto — reinicializar en próxima escritura
     Serial.println(F("ERROR CRÍTICO: No se pudo guardar posición en SD después de 3 intentos"));
     Serial.println(F("ACCIÓN REQUERIDA: Verificar tarjeta SD y conexiones"));
   }
@@ -778,15 +813,17 @@ bool loadPositionFromSD() {
       File dataFile = SD.open(filename, FILE_READ);
       
       if (dataFile) {
-        String line = dataFile.readStringUntil('\n');
+        char buf[32];
+        readLineFromFile(dataFile, buf, sizeof(buf));
         dataFile.close();
-        
+
         // Buscar la coma que separa posición y timestamp
-        int commaIndex = line.indexOf(',');
-        
-        if (commaIndex > 0) {
-          long position = line.substring(0, commaIndex).toInt();
-          unsigned long timestamp = line.substring(commaIndex + 1).toInt();
+        char* comma = strchr(buf, ',');
+
+        if (comma != NULL) {
+          *comma = '\0';
+          long position = atol(buf);
+          unsigned long timestamp = strtoul(comma + 1, NULL, 10);
           
           // Verificar si este es el más reciente
           if (timestamp > newestTimestamp) {
